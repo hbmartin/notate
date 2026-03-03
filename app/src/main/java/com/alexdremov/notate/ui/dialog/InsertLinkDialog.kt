@@ -1,6 +1,5 @@
 package com.alexdremov.notate.ui.dialog
 
-import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -8,12 +7,15 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Patterns
+import android.view.Gravity
 import android.view.View
 import android.view.Window
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import androidx.appcompat.app.AppCompatDialog
 import com.alexdremov.notate.R
 import com.alexdremov.notate.data.LinkType
 import com.alexdremov.notate.util.EpdFastModeController
@@ -25,7 +27,7 @@ class InsertLinkDialog(
     private val onConfirm: (String, String, LinkType) -> Unit,
     private val onBrowse: (onResult: (name: String, uuid: String) -> Unit) -> Unit,
     private val onSelectFile: (onResult: (name: String, path: String) -> Unit) -> Unit,
-) : Dialog(context) {
+) : AppCompatDialog(context) {
     private lateinit var editName: EditText
     private lateinit var editTarget: EditText
     private lateinit var radioGroup: RadioGroup
@@ -42,36 +44,34 @@ class InsertLinkDialog(
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestWindowFeature(Window.FEATURE_NO_TITLE)
+        supportRequestWindowFeature(Window.FEATURE_NO_TITLE)
         setContentView(R.layout.dialog_insert_link)
 
-        editName = findViewById(R.id.edit_link_name)
-        editTarget = findViewById(R.id.edit_target)
-        radioGroup = findViewById(R.id.radio_group_type)
-        radioInternal = findViewById(R.id.radio_internal)
-        radioExternal = findViewById(R.id.radio_external)
-        radioFile = findViewById(R.id.radio_file)
-        btnBrowse = findViewById(R.id.btn_browse)
-        btnInsert = findViewById(R.id.btn_insert)
-        btnCancel = findViewById(R.id.btn_cancel)
+        window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+
+            val params = attributes
+            // Explicitly set width to match the 400dp from XML to help centering
+            val density = context.resources.displayMetrics.density
+            params.width = (400 * density).toInt()
+            params.height = WindowManager.LayoutParams.WRAP_CONTENT
+            params.gravity = Gravity.CENTER
+            attributes = params
+        }
+
+        editName = findViewById<EditText>(R.id.edit_link_name)!!
+        editTarget = findViewById<EditText>(R.id.edit_target)!!
+        radioGroup = findViewById<RadioGroup>(R.id.radio_group_type)!!
+        radioInternal = findViewById<RadioButton>(R.id.radio_internal)!!
+        radioExternal = findViewById<RadioButton>(R.id.radio_external)!!
+        radioFile = findViewById<RadioButton>(R.id.radio_file)!!
+        btnBrowse = findViewById<Button>(R.id.btn_browse)!!
+        btnInsert = findViewById<Button>(R.id.btn_insert)!!
+        btnCancel = findViewById<Button>(R.id.btn_cancel)!!
 
         setupListeners()
         updateState()
         validate()
-    }
-
-    override fun onStart() {
-        super.onStart()
-        window?.let { win ->
-            win.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            win.setLayout(
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
-            val params = win.attributes
-            params.gravity = android.view.Gravity.CENTER
-            win.attributes = params
-        }
     }
 
     private fun setupListeners() {
