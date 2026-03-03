@@ -53,8 +53,9 @@ object Logger {
         tag: String,
         msg: String,
     ) {
-        // Unconditional logging for debugging
-        Log.d(formatTag(tag), msg)
+        if (com.alexdremov.notate.BuildConfig.DEBUG) {
+            Log.d(formatTag(tag), msg)
+        }
 
         if (minLogLevelToShow.priority <= Level.DEBUG.priority) {
             _userEvents.tryEmit(UserEvent(msg, Level.DEBUG))

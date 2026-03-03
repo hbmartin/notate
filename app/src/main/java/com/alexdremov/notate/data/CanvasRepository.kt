@@ -388,6 +388,49 @@ class CanvasRepository(
         }
 
     /**
+     * Imports an external file into the session's assets directory.
+     * Returns the relative path within the session (e.g., "assets/filename.ext").
+     */
+    suspend fun importAsset(
+        session: CanvasSession,
+        uri: android.net.Uri,
+    ): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val assetsDir = File(session.sessionDir, "assets").apply { if (!exists()) mkdirs() }
+
+                val originalName =
+                    com.alexdremov.notate.util.UriUtils
+                        .getFileName(context, uri) ?: "unnamed_asset"
+                val ext = originalName.substringAfterLast('.', "")
+                val base = originalName.substringBeforeLast('.')
+                val safeBase = base.replace("[^a-zA-Z0-9\\s-]".toRegex(), "_").trim()
+                val filename = if (ext.isNotEmpty()) "$safeBase.$ext" else safeBase
+
+                val targetFile = File(assetsDir, filename)
+
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    targetFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                "assets/$filename"
+            } catch (e: Exception) {
+                Logger.e("CanvasRepository", "Failed to import asset: $uri", e)
+                null
+            }
+        }
+
+    /**
+     * Returns the File object for an asset within the session.
+     */
+    fun getAssetFile(
+        session: CanvasSession,
+        assetPath: String,
+    ): File = File(session.sessionDir, assetPath)
+
+    /**
      * Initiates a background save using WorkManager and then closes the session.
      * This guarantees that the save operation (zipping) completes even if the application process dies.
      * The session memory is flushed to disk before queueing the worker.

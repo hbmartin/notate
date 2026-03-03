@@ -7,6 +7,7 @@ import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.util.Patterns
 import android.view.View
 import android.view.Window
 import android.widget.Button
@@ -23,18 +24,21 @@ class InsertLinkDialog(
     context: Context,
     private val onConfirm: (String, String, LinkType) -> Unit,
     private val onBrowse: (onResult: (name: String, uuid: String) -> Unit) -> Unit,
+    private val onSelectFile: (onResult: (name: String, path: String) -> Unit) -> Unit,
 ) : Dialog(context) {
     private lateinit var editName: EditText
     private lateinit var editTarget: EditText
     private lateinit var radioGroup: RadioGroup
     private lateinit var radioInternal: RadioButton
     private lateinit var radioExternal: RadioButton
+    private lateinit var radioFile: RadioButton
     private lateinit var btnBrowse: Button
     private lateinit var btnInsert: Button
     private lateinit var btnCancel: Button
 
     private var selectedType: LinkType = LinkType.INTERNAL_NOTE
     private var targetUuid: String? = null
+    private var targetPath: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,12 +50,14 @@ class InsertLinkDialog(
         radioGroup = findViewById(R.id.radio_group_type)
         radioInternal = findViewById(R.id.radio_internal)
         radioExternal = findViewById(R.id.radio_external)
+        radioFile = findViewById(R.id.radio_file)
         btnBrowse = findViewById(R.id.btn_browse)
         btnInsert = findViewById(R.id.btn_insert)
         btnCancel = findViewById(R.id.btn_cancel)
 
         setupListeners()
         updateState()
+        validate()
     }
 
     override fun onStart() {
@@ -70,17 +76,58 @@ class InsertLinkDialog(
 
     private fun setupListeners() {
         radioGroup.setOnCheckedChangeListener { _, checkedId ->
-            selectedType = if (checkedId == R.id.radio_internal) LinkType.INTERNAL_NOTE else LinkType.EXTERNAL_URL
+            selectedType =
+                when (checkedId) {
+                    R.id.radio_internal -> LinkType.INTERNAL_NOTE
+                    R.id.radio_external -> LinkType.EXTERNAL_URL
+                    R.id.radio_file -> LinkType.LOCAL_FILE
+                    else -> LinkType.INTERNAL_NOTE
+                }
             updateState()
+            validate()
         }
 
+        val watcher =
+            object : TextWatcher {
+                override fun beforeTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    count: Int,
+                    after: Int,
+                ) {}
+
+                override fun onTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    before: Int,
+                    count: Int,
+                ) {}
+
+                override fun afterTextChanged(s: Editable?) {
+                    validate()
+                }
+            }
+        editName.addTextChangedListener(watcher)
+        editTarget.addTextChangedListener(watcher)
+
         btnBrowse.setOnClickListener {
-            onBrowse { name, uuid ->
-                targetUuid = uuid
-                editTarget.setText(name) // Show name but store UUID
-                // Auto-fill name if empty
-                if (editName.text.isBlank()) {
-                    editName.setText(name)
+            if (selectedType == LinkType.INTERNAL_NOTE) {
+                onBrowse { name, uuid ->
+                    targetUuid = uuid
+                    editTarget.setText(name)
+                    if (editName.text.isBlank()) {
+                        editName.setText(name)
+                    }
+                    validate()
+                }
+            } else if (selectedType == LinkType.LOCAL_FILE) {
+                onSelectFile { name, path ->
+                    targetPath = path
+                    editTarget.setText(name)
+                    if (editName.text.isBlank()) {
+                        editName.setText(name)
+                    }
+                    validate()
                 }
             }
         }
@@ -94,10 +141,10 @@ class InsertLinkDialog(
             val rawTarget = editTarget.text.toString().trim()
 
             val target =
-                if (selectedType == LinkType.INTERNAL_NOTE) {
-                    targetUuid ?: "" // Should be validated
-                } else {
-                    rawTarget
+                when (selectedType) {
+                    LinkType.INTERNAL_NOTE -> targetUuid ?: ""
+                    LinkType.LOCAL_FILE -> targetPath ?: ""
+                    LinkType.EXTERNAL_URL -> rawTarget
                 }
 
             if (name.isNotEmpty() && target.isNotEmpty()) {
@@ -113,22 +160,47 @@ class InsertLinkDialog(
         }
     }
 
-    private fun updateState() {
-        if (selectedType == LinkType.INTERNAL_NOTE) {
-            editTarget.isEnabled = false
-            editTarget.hint = "Select a note..."
-            btnBrowse.visibility = View.VISIBLE
-            if (targetUuid == null) {
-                editTarget.text.clear()
+    private fun validate() {
+        val name = editName.text.toString().trim()
+        val targetText = editTarget.text.toString().trim()
+
+        val isTargetValid =
+            when (selectedType) {
+                LinkType.INTERNAL_NOTE -> targetUuid != null && targetText.isNotEmpty()
+                LinkType.LOCAL_FILE -> targetPath != null && targetText.isNotEmpty()
+                LinkType.EXTERNAL_URL -> targetText.isNotEmpty() && Patterns.WEB_URL.matcher(targetText).matches()
             }
-        } else {
-            editTarget.isEnabled = true
-            editTarget.hint = "https://example.com"
-            btnBrowse.visibility = View.GONE
-            // Clear target if it was a UUID before
-            if (targetUuid != null) {
-                editTarget.text.clear()
-                targetUuid = null
+
+        btnInsert.isEnabled = name.isNotEmpty() && isTargetValid
+    }
+
+    private fun updateState() {
+        when (selectedType) {
+            LinkType.INTERNAL_NOTE -> {
+                editTarget.isEnabled = false
+                editTarget.hint = "Select a note..."
+                btnBrowse.text = "Browse"
+                btnBrowse.visibility = View.VISIBLE
+                if (targetUuid == null) editTarget.text.clear()
+            }
+
+            LinkType.LOCAL_FILE -> {
+                editTarget.isEnabled = false
+                editTarget.hint = "Select a file..."
+                btnBrowse.text = "Select"
+                btnBrowse.visibility = View.VISIBLE
+                if (targetPath == null) editTarget.text.clear()
+            }
+
+            LinkType.EXTERNAL_URL -> {
+                editTarget.isEnabled = true
+                editTarget.hint = "https://example.com"
+                btnBrowse.visibility = View.GONE
+                if (targetUuid != null || targetPath != null) {
+                    editTarget.text.clear()
+                    targetUuid = null
+                    targetPath = null
+                }
             }
         }
     }

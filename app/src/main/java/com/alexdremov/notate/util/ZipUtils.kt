@@ -83,13 +83,6 @@ object ZipUtils {
                                 val timeDiff = kotlin.math.abs(localFile.lastModified() - entry.time)
                                 val sizeMatch = localFile.length() == entry.size
 
-                                if (relPath == "manifest.bin") {
-                                    Logger.d(
-                                        "ZipUtils",
-                                        "Checking manifest.bin: timeDiff=$timeDiff, sizeMatch=$sizeMatch (Local: ${localFile.length()} vs Entry: ${entry.size})",
-                                    )
-                                }
-
                                 if (timeDiff < 2000 && sizeMatch) {
                                     // Match! Copy from ZIP.
                                     // Note: Standard API re-compresses, but this saves Random IOPS on the source dir.
@@ -99,10 +92,6 @@ object ZipUtils {
                                     zip.getInputStream(entry).use { it.copyTo(zos) }
                                     zos.closeEntry()
                                     processedRelPaths.add(relPath)
-                                } else {
-                                    if (relPath == "manifest.bin") {
-                                        Logger.d("ZipUtils", "manifest.bin CHANGED. Will re-pack.")
-                                    }
                                 }
                             }
                         }

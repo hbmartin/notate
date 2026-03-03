@@ -92,7 +92,20 @@ class FileIndexManager(
                                     uuid = metadata.uuid,
                                 )
                             currentFiles[path] = newMetadata
-                            newMetadata.uuid?.let { currentUuidToPath[it] = path }
+
+                            val uuid = newMetadata.uuid
+                            if (uuid != null) {
+                                if (currentUuidToPath.containsKey(uuid)) {
+                                    Logger.w(
+                                        "FileIndex",
+                                        "CRITICAL: UUID COLLISION DETECTED for UUID: $uuid between paths: ${currentUuidToPath[uuid]} and $path",
+                                    )
+                                    // We keep both in currentFiles, but index only one path for reverse lookup.
+                                    // The user will see duplicate notes in the picker, which is better than losing one.
+                                } else {
+                                    currentUuidToPath[uuid] = path
+                                }
+                            }
                         } else {
                             Logger.w("FileIndex", "Failed to parse metadata for $name")
                         }

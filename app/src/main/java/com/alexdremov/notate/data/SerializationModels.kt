@@ -48,9 +48,11 @@ data class CanvasData(
     val uuid: String? = null,
 )
 
+@Serializable
 enum class LinkType {
     INTERNAL_NOTE,
     EXTERNAL_URL,
+    LOCAL_FILE,
 }
 
 @Serializable

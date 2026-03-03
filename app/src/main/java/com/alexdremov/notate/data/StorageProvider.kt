@@ -745,17 +745,10 @@ class LocalStorageProvider(
         if (!file.exists()) return null
 
         // 1. Check existing (fast)
-        val meta = getFileMetadata(path)
+        var meta = getFileMetadata(path)
         if (meta?.uuid != null) return meta.uuid
 
-        // 2. Generate new
-        val newUuid =
-            java.util.UUID
-                .randomUUID()
-                .toString()
-        Logger.i("Storage", "ensureUuid: Generating new UUID $newUuid for $path")
-
-        // 3. Write
+        // 2. Write
         val lock =
             try {
                 com.alexdremov.notate.data.io.FileLockManager
@@ -765,9 +758,19 @@ class LocalStorageProvider(
                 return null
             }
 
-        val tempFile = File(file.parent, file.name + ".tmp")
-
         return try {
+            // 3. Re-check after lock to prevent double-generation
+            meta = getFileMetadata(path)
+            if (meta?.uuid != null) return meta.uuid
+
+            // 4. Generate new
+            val newUuid =
+                java.util.UUID
+                    .randomUUID()
+                    .toString()
+            Logger.i("Storage", "ensureUuid: Generating new UUID $newUuid for $path")
+
+            val tempFile = File(file.parent, file.name + ".tmp")
             file.inputStream().use { input ->
                 tempFile.outputStream().use { output ->
                     StorageUtils.createUpdatedProtobuf(
@@ -783,7 +786,6 @@ class LocalStorageProvider(
             newUuid
         } catch (e: Exception) {
             Logger.e("Storage", "Failed to ensure UUID", e)
-            tempFile.delete()
             null
         } finally {
             lock.close()
@@ -795,6 +797,13 @@ class SafStorageProvider(
     private val context: Context,
     private val rootUriString: String,
 ) : StorageProvider {
+    companion object {
+        // Process-level synchronization for SAF operations to prevent race conditions
+        private val safMutexes = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+        private fun getMutex(uri: String): kotlinx.coroutines.sync.Mutex = safMutexes.getOrPut(uri) { kotlinx.coroutines.sync.Mutex() }
+    }
+
     override fun isApplicable(path: String?): Boolean = path != null && path.startsWith("content://")
 
     override fun getRootPath(): String = rootUriString

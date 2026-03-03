@@ -932,13 +932,49 @@ class CanvasControllerImpl(
             }
 
             is com.alexdremov.notate.model.LinkItem -> {
-                val (newLogical, newRotation, newAabb) =
+                val (newLogical, newRotation, _) =
                     StrokeGeometry.transformItemLogicalBounds(
                         item.logicalBounds,
                         item.rotation,
                         transform,
                     )
-                item.copy(logicalBounds = newLogical, bounds = newAabb, rotation = newRotation)
+
+                // Calculate scale factor from width change
+                val scaleFactor = newLogical.width() / item.logicalBounds.width()
+                val newFontSize = item.fontSize * scaleFactor
+
+                // Re-measure link size with new font size
+                val sizePair =
+                    com.alexdremov.notate.util.LinkRenderer.measureSize(
+                        context,
+                        item.label,
+                        newFontSize,
+                    )
+
+                // Update logical bounds based on measured size
+                // We keep the center fixed
+                val centerX = newLogical.centerX()
+                val centerY = newLogical.centerY()
+                val measuredWidth = sizePair.first
+                val measuredHeight = sizePair.second
+
+                val finalLogical =
+                    android.graphics.RectF(
+                        centerX - measuredWidth / 2f,
+                        centerY - measuredHeight / 2f,
+                        centerX + measuredWidth / 2f,
+                        centerY + measuredHeight / 2f,
+                    )
+
+                // Recompute rotated AABB based on updated logical bounds
+                val finalAabb = StrokeGeometry.computeRotatedBounds(finalLogical, newRotation)
+
+                item.copy(
+                    logicalBounds = finalLogical,
+                    bounds = finalAabb,
+                    rotation = newRotation,
+                    fontSize = newFontSize,
+                )
             }
 
             else -> {

@@ -12,17 +12,21 @@ import com.alexdremov.notate.data.LinkType
 import com.alexdremov.notate.model.LinkItem
 
 object LinkRenderer {
-    private const val PADDING_X = 20f
-    private const val PADDING_Y = 10f
-    private const val ICON_SIZE = 24f
-    private const val ICON_PADDING = 10f
-    private const val CORNER_RADIUS = 12f
+    private const val BASE_FONT_SIZE = 20f
+    private const val BASE_PADDING_X = 20f
+    private const val BASE_PADDING_Y = 10f
+    private const val BASE_ICON_SIZE = 24f
+    private const val BASE_ICON_PADDING = 10f
+    private const val BASE_CORNER_RADIUS = 12f
+
+    private fun getScale(fontSize: Float) = fontSize / BASE_FONT_SIZE
 
     fun measureSize(
         context: Context,
         label: String,
         fontSize: Float,
     ): Pair<Float, Float> {
+        val scale = getScale(fontSize)
         val paint = Paint()
         paint.textSize = fontSize
         paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -30,8 +34,8 @@ object LinkRenderer {
         val fontMetrics = paint.fontMetrics
         val textHeight = fontMetrics.descent - fontMetrics.ascent
 
-        val totalWidth = PADDING_X * 2 + ICON_SIZE + ICON_PADDING + textWidth
-        val totalHeight = kotlin.math.max(textHeight, ICON_SIZE) + PADDING_Y * 2
+        val totalWidth = (BASE_PADDING_X * 2 + BASE_ICON_SIZE + BASE_ICON_PADDING) * scale + textWidth
+        val totalHeight = kotlin.math.max(textHeight, BASE_ICON_SIZE * scale) + (BASE_PADDING_Y * 2) * scale
 
         return Pair(totalWidth, totalHeight)
     }
@@ -41,40 +45,44 @@ object LinkRenderer {
         item: LinkItem,
         context: Context?,
         paint: Paint,
-        scale: Float = 1.0f,
+        canvasScale: Float = 1.0f,
     ) {
         val originalStyle = paint.style
         val originalColor = paint.color
         val originalStrokeWidth = paint.strokeWidth
 
+        val scale = getScale(item.fontSize)
+        val cornerRadius = BASE_CORNER_RADIUS * scale
+
         // Apply rotation around center
         canvas.save()
-        val centerX = item.bounds.centerX()
-        val centerY = item.bounds.centerY()
+        val centerX = item.logicalBounds.centerX()
+        val centerY = item.logicalBounds.centerY()
         canvas.rotate(item.rotation, centerX, centerY)
 
         // Draw Background (White capsule)
         paint.style = Paint.Style.FILL
         paint.color = Color.WHITE
         // Shadow effect could be added here if needed
-        canvas.drawRoundRect(item.logicalBounds, CORNER_RADIUS, CORNER_RADIUS, paint)
+        canvas.drawRoundRect(item.logicalBounds, cornerRadius, cornerRadius, paint)
 
         // Draw Border (Non-Scaling Stroke)
         paint.style = Paint.Style.STROKE
         paint.color = item.color
-        val effectiveScale = if (scale > 0) scale else 1.0f
+        val effectiveScale = if (canvasScale > 0) canvasScale else 1.0f
         paint.strokeWidth = 2f / effectiveScale
-        canvas.drawRoundRect(item.logicalBounds, CORNER_RADIUS, CORNER_RADIUS, paint)
+        canvas.drawRoundRect(item.logicalBounds, cornerRadius, cornerRadius, paint)
 
         // Draw Icon and Text
-        val contentLeft = item.logicalBounds.left + PADDING_X
+        val contentLeft = item.logicalBounds.left + BASE_PADDING_X * scale
         val contentCenterY = item.logicalBounds.centerY()
+        val iconSize = BASE_ICON_SIZE * scale
 
         // Icon
-        drawIcon(canvas, item.type, contentLeft, contentCenterY, ICON_SIZE, paint, context, item.color)
+        drawIcon(canvas, item.type, contentLeft, contentCenterY, iconSize, paint, context, item.color)
 
         // Text
-        val textLeft = contentLeft + ICON_SIZE + ICON_PADDING
+        val textLeft = contentLeft + iconSize + BASE_ICON_PADDING * scale
         paint.style = Paint.Style.FILL
         paint.color = item.color // Text same color as border/icon
         paint.textSize = item.fontSize
@@ -107,11 +115,12 @@ object LinkRenderer {
             when (type) {
                 LinkType.INTERNAL_NOTE -> R.drawable.ic_link_file
                 LinkType.EXTERNAL_URL -> R.drawable.ic_link_globe
+                LinkType.LOCAL_FILE -> R.drawable.ic_link_file
             }
 
         val drawable = ContextCompat.getDrawable(context, drawableId) ?: return
 
-        drawable.setColorFilter(color, PorterDuff.Mode.SRC_IN)
+        drawable.mutate().setColorFilter(color, PorterDuff.Mode.SRC_IN)
 
         val left = x.toInt()
         val top = (y - size / 2).toInt()

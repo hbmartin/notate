@@ -23,13 +23,31 @@ data class LinkItem(
         x: Float,
         y: Float,
     ): Float {
-        // For a link, we assume a hit if the point is within the (potentially rotated) bounds.
-        // A more sophisticated implementation might check if the point is within the rendered text/icon.
-        if (bounds.contains(x, y)) {
-            return 0f // Inside the link item
+        // Fast path: no rotation, simple AABB hit-test.
+        if (rotation == 0f) {
+            return if (logicalBounds.contains(x, y)) 0f else Float.MAX_VALUE
         }
-        // If not inside, return a large distance to indicate no hit.
-        return Float.MAX_VALUE
+
+        // When rotated, transform the point into the unrotated local space
+        // defined by logicalBounds, then perform the hit-test there.
+        val centerX = logicalBounds.centerX()
+        val centerY = logicalBounds.centerY()
+
+        val angleRad = -Math.toRadians(rotation.toDouble())
+        val cos = kotlin.math.cos(angleRad)
+        val sin = kotlin.math.sin(angleRad)
+
+        val dx = x - centerX
+        val dy = y - centerY
+
+        val localX = (dx * cos - dy * sin + centerX).toFloat()
+        val localY = (dx * sin + dy * cos + centerY).toFloat()
+
+        return if (logicalBounds.contains(localX, localY)) {
+            0f
+        } else {
+            Float.MAX_VALUE
+        }
     }
 
     // Standard equals and hashCode for data classes will work, but ensure order is considered for identity.

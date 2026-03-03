@@ -118,7 +118,7 @@ fun MainScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
-    val activity = LocalContext.current as? ComponentActivity
+    val activity = androidx.activity.compose.LocalActivity.current as? ComponentActivity
 
     // Listen for global errors
     LaunchedEffect(lifecycleOwner) {

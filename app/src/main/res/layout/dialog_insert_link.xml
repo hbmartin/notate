@@ -48,8 +48,8 @@
             android:id="@+id/radio_internal"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Internal Note"
-            android:textSize="16sp"
+            android:text="Note"
+            android:textSize="14sp"
             android:layout_weight="1"
             android:checked="true" />
 
@@ -57,8 +57,16 @@
             android:id="@+id/radio_external"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="External URL"
-            android:textSize="16sp"
+            android:text="URL"
+            android:textSize="14sp"
+            android:layout_weight="1" />
+
+        <RadioButton
+            android:id="@+id/radio_file"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="File"
+            android:textSize="14sp"
             android:layout_weight="1" />
     </RadioGroup>
 

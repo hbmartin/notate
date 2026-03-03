@@ -125,6 +125,7 @@ class OnyxCanvasView
 
         var onRequestInsertImage: (() -> Unit)? = null
         var onBrowseFiles: ((onResult: (name: String, uuid: String) -> Unit) -> Unit)? = null
+        var onSelectFile: ((onResult: (name: String, path: String) -> Unit) -> Unit)? = null
         var onLinkActivated: ((com.alexdremov.notate.model.LinkItem) -> Unit)? = null
 
         private var actionPopup: com.alexdremov.notate.ui.dialog.SelectionActionPopup? = null
@@ -317,6 +318,9 @@ class OnyxCanvasView
                     },
                     onBrowse = { callback ->
                         onBrowseFiles?.invoke(callback)
+                    },
+                    onSelectFile = { callback ->
+                        onSelectFile?.invoke(callback)
                     },
                 )
             dialog.show()
@@ -637,7 +641,8 @@ class OnyxCanvasView
         fun setTool(tool: PenTool) {
             this.currentTool = tool
             penInputHandler.setTool(tool)
-            performHardRefresh()
+            // No need for performHardRefresh() here, it causes flickering on every tool switch.
+            // penInputHandler will handle hardware tool updates if needed.
         }
 
         fun setEraser(tool: PenTool) {
@@ -651,7 +656,7 @@ class OnyxCanvasView
         suspend fun setBackgroundStyle(style: com.alexdremov.notate.model.BackgroundStyle) {
             canvasModel.setBackground(style)
             invalidateCanvas()
-            performHardRefresh()
+            performHardRefresh() // Still needed for background style change
             onContentChanged?.invoke()
         }
 
@@ -703,14 +708,18 @@ class OnyxCanvasView
                 return
             }
 
-            canvasModel.undo()?.let { canvasRenderer.invalidateTiles(it) }
-            refreshAfterEdit()
+            canvasModel.undo()?.let {
+                canvasRenderer.invalidateTiles(it)
+                refreshAfterEdit(it)
+            }
             onContentChanged?.invoke()
         }
 
         suspend fun redo() {
-            canvasModel.redo()?.let { canvasRenderer.invalidateTiles(it) }
-            refreshAfterEdit()
+            canvasModel.redo()?.let {
+                canvasRenderer.invalidateTiles(it)
+                refreshAfterEdit(it)
+            }
             onContentChanged?.invoke()
         }
 
@@ -799,13 +808,21 @@ class OnyxCanvasView
             }
         }
 
-        private fun refreshAfterEdit() {
+        private fun refreshAfterEdit(bounds: RectF? = null) {
             val visibleRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
             matrix.invert(inverseMatrix)
             inverseMatrix.mapRect(visibleRect)
-            canvasRenderer.refreshTiles(viewportInteractor.getCurrentScale(), visibleRect)
+
+            // Only refresh tiles that are actually visible
+            val refreshBounds = bounds ?: visibleRect
+            if (RectF.intersects(refreshBounds, visibleRect)) {
+                canvasRenderer.refreshTiles(viewportInteractor.getCurrentScale(), refreshBounds)
+            }
+
             minimapDrawer?.setDirty()
             drawContent()
-            performHardRefresh()
+
+            // Use DU for fast visual update after undo/redo instead of full GC refresh
+            EpdController.invalidate(this, UpdateMode.DU)
         }
     }

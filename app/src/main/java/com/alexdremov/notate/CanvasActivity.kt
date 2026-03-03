@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -78,19 +80,48 @@ class CanvasActivity : AppCompatActivity() {
     private var floatingSession: com.alexdremov.notate.data.CanvasSession? = null
 
     private var pendingLinkCallback: ((name: String, uuid: String) -> Unit)? = null
+    private var pendingFileCallback: ((name: String, path: String) -> Unit)? = null
 
     private val notePickerLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val callback = pendingLinkCallback
+            pendingLinkCallback = null
             if (result.resultCode == RESULT_OK) {
                 val data = result.data
                 val name = data?.getStringExtra("NOTE_NAME")
                 val uuid = data?.getStringExtra("NOTE_UUID")
 
                 if (name != null && uuid != null) {
-                    pendingLinkCallback?.invoke(name, uuid)
+                    callback?.invoke(name, uuid)
                 }
             }
-            pendingLinkCallback = null
+        }
+
+    private val filePickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            val callback = pendingFileCallback
+            pendingFileCallback = null
+            if (uri != null && callback != null) {
+                lifecycleScope.launch {
+                    val session = viewModel.currentSession.value
+                    if (session != null) {
+                        val importedPath = canvasRepository.importAsset(session, uri)
+                        if (importedPath != null) {
+                            val name =
+                                com.alexdremov.notate.util.UriUtils
+                                    .getFileName(this@CanvasActivity, uri) ?: "File"
+                            callback.invoke(name, importedPath)
+                        } else {
+                            android.widget.Toast
+                                .makeText(
+                                    this@CanvasActivity,
+                                    "Failed to import file",
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
+                        }
+                    }
+                }
+            }
         }
 
     private val exportLauncher =
@@ -462,6 +493,11 @@ class CanvasActivity : AppCompatActivity() {
             }
         }
 
+        binding.canvasView.onSelectFile = { callback ->
+            pendingFileCallback = callback
+            filePickerLauncher.launch(arrayOf("*/*"))
+        }
+
         binding.canvasView.onLinkActivated = { link ->
             handleLinkActivation(link)
         }
@@ -558,6 +594,8 @@ class CanvasActivity : AppCompatActivity() {
         setupAutoSave()
     }
 
+    private val externalProjectRepositories = mutableMapOf<String, com.alexdremov.notate.data.ProjectRepository>()
+
     private fun handleLinkActivation(link: com.alexdremov.notate.model.LinkItem) {
         // Close existing window if any
         floatingWindow?.onClose?.invoke()
@@ -632,10 +670,33 @@ class CanvasActivity : AppCompatActivity() {
         when (link.type) {
             LinkType.EXTERNAL_URL -> {
                 val webView = WebView(this)
-                webView.webViewClient = WebViewClient()
-                webView.settings.javaScriptEnabled = true
+                webView.webViewClient =
+                    object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                        ): Boolean {
+                            val url = request?.url?.toString() ?: return false
+                            // Allow only http and https
+                            return !url.startsWith("http://") && !url.startsWith("https://")
+                        }
+                    }
+
+                webView.settings.apply {
+                    javaScriptEnabled = true
+                    allowFileAccess = false
+                    allowContentAccess = false
+                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                }
+
                 webView.loadUrl(link.target)
                 floatingWindow?.setContentView(webView)
+
+                val previousOnClose = floatingWindow?.onClose
+                floatingWindow?.onClose = {
+                    webView.destroy()
+                    previousOnClose?.invoke()
+                }
             }
 
             LinkType.INTERNAL_NOTE -> {
@@ -661,8 +722,10 @@ class CanvasActivity : AppCompatActivity() {
 
                                 for (project in projects) {
                                     val repo =
-                                        com.alexdremov.notate.data
-                                            .ProjectRepository(this@CanvasActivity, project.uri)
+                                        externalProjectRepositories.getOrPut(project.uri) {
+                                            com.alexdremov.notate.data
+                                                .ProjectRepository(this@CanvasActivity, project.uri)
+                                        }
                                     foundPath = repo.getPathForUuid(targetUuid)
 
                                     if (foundPath == null) {
@@ -692,7 +755,45 @@ class CanvasActivity : AppCompatActivity() {
                     }
                 }
             }
+
+            LinkType.LOCAL_FILE -> {
+                lifecycleScope.launch {
+                    val session = viewModel.currentSession.value ?: return@launch
+                    val assetPath = link.target
+                    val file = canvasRepository.getAssetFile(session, assetPath)
+
+                    if (file.exists()) {
+                        if (assetPath.lowercase().endsWith(".pdf")) {
+                            openPdfViewer(file)
+                        } else {
+                            android.widget.Toast
+                                .makeText(
+                                    this@CanvasActivity,
+                                    "File type not supported for inline viewing",
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
+                            floatingWindow?.onClose?.invoke()
+                        }
+                    } else {
+                        android.widget.Toast
+                            .makeText(
+                                this@CanvasActivity,
+                                "Linked file not found",
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        floatingWindow?.onClose?.invoke()
+                    }
+                }
+            }
         }
+    }
+
+    private fun openPdfViewer(file: java.io.File) {
+        val pdfView =
+            com.alexdremov.notate.ui.view
+                .SimplePdfView(this)
+        pdfView.setPdfFile(file)
+        floatingWindow?.setContentView(pdfView)
     }
 
     private suspend fun openFloatingCanvas(path: String) {
