@@ -388,6 +388,61 @@ class CanvasRepository(
         }
 
     /**
+     * Imports an external file into the session's assets directory.
+     * Returns the relative path within the session (e.g., "assets/filename.ext").
+     */
+    suspend fun importAsset(
+        session: CanvasSession,
+        uri: android.net.Uri,
+    ): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val assetsDir = File(session.sessionDir, "assets").apply { if (!exists()) mkdirs() }
+
+                val originalName =
+                    com.alexdremov.notate.util.UriUtils
+                        .getFileName(context, uri) ?: "unnamed_asset"
+                val ext = originalName.substringAfterLast('.', "")
+                val base = originalName.substringBeforeLast('.')
+                val safeBase = base.replace("[^a-zA-Z0-9\\s-]".toRegex(), "_").trim()
+
+                var filename = if (ext.isNotEmpty()) "$safeBase.$ext" else safeBase
+                var targetFile = File(assetsDir, filename)
+
+                // 1. Resolve collision if file already exists
+                var counter = 1
+                while (targetFile.exists()) {
+                    val newName = if (ext.isNotEmpty()) "$safeBase ($counter).$ext" else "$safeBase ($counter)"
+                    targetFile = File(assetsDir, newName)
+                    filename = newName
+                    counter++
+                }
+
+                // 2. Perform copy
+                val success =
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        targetFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                        true
+                    } ?: false
+
+                if (success) "assets/$filename" else null
+            } catch (e: Exception) {
+                Logger.e("CanvasRepository", "Failed to import asset: $uri", e)
+                null
+            }
+        }
+
+    /**
+     * Returns the File object for an asset within the session.
+     */
+    fun getAssetFile(
+        session: CanvasSession,
+        assetPath: String,
+    ): File = File(session.sessionDir, assetPath)
+
+    /**
      * Initiates a background save using WorkManager and then closes the session.
      * This guarantees that the save operation (zipping) completes even if the application process dies.
      * The session memory is flushed to disk before queueing the worker.
@@ -479,13 +534,28 @@ class CanvasRepository(
                     // 1. Flush RegionManager (writes to session dir)
                     session.regionManager.saveAll()
 
+                    // Ensure UUID exists
+                    val currentMeta = session.metadata
+                    val metadataWithUuid =
+                        if (currentMeta.uuid == null) {
+                            val newUuid =
+                                java.util.UUID
+                                    .randomUUID()
+                                    .toString()
+                            Logger.i("CanvasRepository", "Generating NEW UUID for canvas: $newUuid")
+                            currentMeta.copy(uuid = newUuid)
+                        } else {
+                            Logger.d("CanvasRepository", "Using existing UUID for canvas: ${currentMeta.uuid}")
+                            currentMeta
+                        }
+
                     // 2. Generate Thumbnail
-                    val thumbBase64 = ThumbnailGenerator.generateBase64(session.regionManager, session.metadata, context)
+                    val thumbBase64 = ThumbnailGenerator.generateBase64(session.regionManager, metadataWithUuid, context)
                     val metadataWithThumb =
                         if (thumbBase64 != null) {
-                            session.metadata.copy(thumbnail = thumbBase64)
+                            metadataWithUuid.copy(thumbnail = thumbBase64)
                         } else {
-                            session.metadata
+                            metadataWithUuid
                         }
                     session.updateMetadata(metadataWithThumb)
 
@@ -493,6 +563,7 @@ class CanvasRepository(
                     val manifestFile = File(session.sessionDir, "manifest.bin")
                     val metaBytes = ProtoBuf.encodeToByteArray(CanvasData.serializer(), metadataWithThumb)
                     manifestFile.writeBytes(metaBytes)
+                    Logger.d("CanvasRepository", "Wrote manifest.bin, size=${metaBytes.size}, UUID=${metadataWithThumb.uuid}")
 
                     if (!commitToZip) {
                         Logger.d("CanvasRepository", "Session flushed (no-zip). ManifestTime=${formatTime(manifestFile.lastModified())}")

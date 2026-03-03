@@ -53,9 +53,10 @@ object Logger {
         tag: String,
         msg: String,
     ) {
-        if (CanvasConfig.DEBUG_SHOW_TILES || CanvasConfig.DEBUG_SHOW_REGIONS || CanvasConfig.DEBUG_ENABLE_PROFILING) {
+        if (com.alexdremov.notate.BuildConfig.DEBUG) {
             Log.d(formatTag(tag), msg)
         }
+
         if (minLogLevelToShow.priority <= Level.DEBUG.priority) {
             _userEvents.tryEmit(UserEvent(msg, Level.DEBUG))
         }

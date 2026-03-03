@@ -78,4 +78,37 @@ class CanvasSerializerRefactorTest {
         assertEquals(original.bounds.left, restored.bounds.left, 0.1f)
         assertEquals(original.order, restored.order)
     }
+
+    @Test
+    fun `test LinkItem serialization roundtrip`() {
+        val logical = RectF(100f, 100f, 300f, 150f)
+        val rotation = 15f
+        val aabb = StrokeGeometry.computeRotatedBounds(logical, rotation)
+
+        val original =
+            com.alexdremov.notate.model.LinkItem(
+                label = "Internal Note",
+                target = "uuid-123",
+                type = com.alexdremov.notate.data.LinkType.INTERNAL_NOTE,
+                color = 0x0000FF,
+                fontSize = 20f,
+                logicalBounds = logical,
+                bounds = aabb,
+                rotation = rotation,
+                order = 789L,
+            )
+
+        val data = CanvasSerializer.toLinkItemData(original)
+        val restored = CanvasSerializer.fromLinkItemData(data)
+
+        assertEquals(original.label, restored.label)
+        assertEquals(original.target, restored.target)
+        assertEquals(original.type, restored.type)
+        assertEquals(original.color, restored.color)
+        assertEquals(original.fontSize, restored.fontSize, 0.01f)
+        assertEquals(original.logicalBounds, restored.logicalBounds)
+        assertEquals(original.rotation, restored.rotation, 0.01f)
+        assertEquals(original.bounds.left, restored.bounds.left, 0.1f)
+        assertEquals(original.order, restored.order)
+    }
 }

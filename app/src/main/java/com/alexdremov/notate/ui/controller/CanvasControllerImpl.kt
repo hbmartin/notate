@@ -492,7 +492,7 @@ class CanvasControllerImpl(
                     fontSize = fontSize,
                     color = color,
                     logicalBounds = logical,
-                    bounds = RectF(logical),
+                    bounds = RectF(logical).apply { inset(-5f, -5f) },
                 )
 
             val added = model.addItem(textItem)
@@ -559,6 +559,7 @@ class CanvasControllerImpl(
             val newAabb =
                 com.alexdremov.notate.util.StrokeGeometry
                     .computeRotatedBounds(newLogical, oldItem.rotation)
+            newAabb.inset(-5f, -5f)
 
             val newItem = oldItem.copy(text = newText, logicalBounds = newLogical, bounds = newAabb)
 
@@ -579,6 +580,128 @@ class CanvasControllerImpl(
                 renderer.updateTilesWithItem(committedItem)
 
                 // Re-select to allow immediate further editing/moving
+                selectionManager.clearSelection()
+                selectionManager.select(committedItem)
+                renderer.setHiddenItems(selectionManager.getSelectedIds())
+                renderer.hideItemsInCache(listOf(committedItem))
+                generateSelectionImposter()
+
+                renderer.invalidate()
+                onContentChangedListener?.invoke()
+            }
+        }
+    }
+
+    override suspend fun addLink(
+        label: String,
+        target: String,
+        type: com.alexdremov.notate.data.LinkType,
+        x: Float,
+        y: Float,
+        fontSize: Float,
+        color: Int,
+    ) {
+        if (label.isBlank() || target.isBlank()) return
+
+        operationMutex.withLock {
+            val (width, height) =
+                com.alexdremov.notate.util.LinkRenderer
+                    .measureSize(context, label, fontSize)
+            val logical = RectF(x, y, x + width, y + height)
+
+            val linkItem =
+                com.alexdremov.notate.model.LinkItem(
+                    label = label,
+                    target = target,
+                    type = type,
+                    fontSize = fontSize,
+                    color = color,
+                    logicalBounds = logical,
+                    bounds = RectF(logical).apply { inset(-10f, -10f) },
+                )
+
+            val added = model.addItem(linkItem)
+            if (added != null) {
+                withContext(Dispatchers.Main) {
+                    renderer.updateTilesWithItem(added)
+                    selectionManager.clearSelection()
+                    selectionManager.select(added)
+                    renderer.setHiddenItems(selectionManager.getSelectedIds())
+                    renderer.hideItemsInCache(listOf(added))
+                    generateSelectionImposter()
+                    renderer.invalidate()
+                    onContentChangedListener?.invoke()
+                }
+            }
+        }
+    }
+
+    override suspend fun updateLink(
+        oldItem: com.alexdremov.notate.model.LinkItem,
+        label: String,
+        target: String,
+        type: com.alexdremov.notate.data.LinkType,
+    ) {
+        if (label.isBlank() || target.isBlank()) {
+            // Delete if invalid
+            operationMutex.withLock {
+                val bounds = oldItem.bounds
+                val ids = setOf(oldItem.order)
+                selectionManager.clearSelection()
+                updatePinnedRegions()
+
+                withContext(Dispatchers.Default) {
+                    model.deleteItemsByIds(bounds, ids, context.cacheDir)
+                }
+
+                withContext(Dispatchers.Main) {
+                    renderer.setHiddenItems(emptySet())
+                    renderer.invalidateTiles(bounds)
+                    renderer.invalidate()
+                    onContentChangedListener?.invoke()
+                }
+            }
+            return
+        }
+
+        operationMutex.withLock {
+            val (width, height) =
+                com.alexdremov.notate.util.LinkRenderer
+                    .measureSize(context, label, oldItem.fontSize)
+
+            // Maintain top-left position but update dimensions
+            val newLogical =
+                RectF(
+                    oldItem.logicalBounds.left,
+                    oldItem.logicalBounds.top,
+                    oldItem.logicalBounds.left + width,
+                    oldItem.logicalBounds.top + height,
+                )
+
+            val newAabb =
+                com.alexdremov.notate.util.StrokeGeometry
+                    .computeRotatedBounds(newLogical, oldItem.rotation)
+
+            val newItem =
+                oldItem.copy(
+                    label = label,
+                    target = target,
+                    type = type,
+                    logicalBounds = newLogical,
+                    bounds = newAabb,
+                )
+
+            val committedItems = model.replaceItems(listOf(oldItem), listOf(newItem))
+            val committedItem = committedItems.firstOrNull() as? com.alexdremov.notate.model.LinkItem ?: return@withLock
+
+            withContext(Dispatchers.Main) {
+                val unionBounds = RectF(oldItem.bounds)
+                unionBounds.union(newAabb)
+                unionBounds.inset(-10f, -10f)
+
+                renderer.refreshTiles(unionBounds)
+                renderer.updateTilesWithItem(committedItem)
+
                 selectionManager.clearSelection()
                 selectionManager.select(committedItem)
                 renderer.setHiddenItems(selectionManager.getSelectedIds())
@@ -764,7 +887,7 @@ class CanvasControllerImpl(
                         val pts = floatArrayOf(p.x, p.y)
                         transform.mapPoints(pts)
                         com.onyx.android.sdk.data.note
-                            .TouchPoint(pts[0], pts[1], p.pressure, p.size, p.timestamp)
+                            .TouchPoint(pts[0], pts[1], p.pressure, p.size, p.tiltX, p.tiltY, p.timestamp)
                     }
 
                 item.copy(path = newPath, points = newPoints, bounds = newBounds, width = newWidth)
@@ -781,7 +904,7 @@ class CanvasControllerImpl(
             }
 
             is com.alexdremov.notate.model.TextItem -> {
-                val (newLogical, newRotation, newAabb) =
+                val (newLogical, newRotation, _) =
                     StrokeGeometry.transformItemLogicalBounds(
                         item.logicalBounds,
                         item.rotation,
@@ -801,11 +924,59 @@ class CanvasControllerImpl(
                 // Update newLogical's height and recompute AABB
                 newLogical.bottom = newLogical.top + newHeight
                 val finalAabb = StrokeGeometry.computeRotatedBounds(newLogical, newRotation)
+                finalAabb.inset(-5f, -5f) // Safety margin
 
                 item.copy(
                     logicalBounds = newLogical,
                     bounds = finalAabb,
                     rotation = newRotation,
+                )
+            }
+
+            is com.alexdremov.notate.model.LinkItem -> {
+                val (newLogical, newRotation, _) =
+                    StrokeGeometry.transformItemLogicalBounds(
+                        item.logicalBounds,
+                        item.rotation,
+                        transform,
+                    )
+
+                // Calculate scale factor from width change
+                val scaleFactor = newLogical.width() / item.logicalBounds.width()
+                val newFontSize = item.fontSize * scaleFactor
+
+                // Re-measure link size with new font size
+                val sizePair =
+                    com.alexdremov.notate.util.LinkRenderer.measureSize(
+                        context,
+                        item.label,
+                        newFontSize,
+                    )
+
+                // Update logical bounds based on measured size
+                // We keep the center fixed
+                val centerX = newLogical.centerX()
+                val centerY = newLogical.centerY()
+                val measuredWidth = sizePair.first
+                val measuredHeight = sizePair.second
+
+                val finalLogical =
+                    RectF(
+                        centerX - measuredWidth / 2f,
+                        centerY - measuredHeight / 2f,
+                        centerX + measuredWidth / 2f,
+                        centerY + measuredHeight / 2f,
+                    )
+
+                // Recompute rotated AABB based on updated logical bounds
+                val finalAabb = StrokeGeometry.computeRotatedBounds(finalLogical, newRotation)
+                finalAabb.inset(-10f, -10f) // Safety margin for border
+
+                item.copy(
+                    logicalBounds = finalLogical,
+                    bounds = finalAabb,
+                    rotation = newRotation,
+                    fontSize = newFontSize,
                 )
             }
 

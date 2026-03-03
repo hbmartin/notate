@@ -94,6 +94,7 @@ class OnyxCanvasView
                     EpdController.setScreenHandWritingPenState(this, EpdPenManager.PEN_DRAWING)
                     updateTouchHelperTool()
                 },
+                lastStrokeEndTimeProvider = { lastStrokeEndTime },
             )
 
         private val selectionInteractor = SelectionInteractor(this, canvasController, viewScope, matrix, inverseMatrix)
@@ -112,7 +113,10 @@ class OnyxCanvasView
         private var twoFingerPointerId1 = -1
         private var twoFingerPointerId2 = -1
 
+        private var lastStrokeEndTime = 0L
+
         private var currentTool: PenTool = PenTool.defaultPens()[0]
+        private var isReadOnly = false
 
         private val exclusionRects = ArrayList<Rect>()
 
@@ -123,10 +127,13 @@ class OnyxCanvasView
         var minimapDrawer: com.alexdremov.notate.ui.render.MinimapDrawer? = null
 
         var onRequestInsertImage: (() -> Unit)? = null
+        var onBrowseFiles: ((onResult: (name: String, uuid: String) -> Unit) -> Unit)? = null
+        var onSelectFile: ((onResult: (name: String, path: String) -> Unit) -> Unit)? = null
+        var onLinkActivated: ((com.alexdremov.notate.model.LinkItem) -> Unit)? = null
 
         private var actionPopup: com.alexdremov.notate.ui.dialog.SelectionActionPopup? = null
 
-        private var pastePopup: com.alexdremov.notate.ui.dialog.PasteActionPopup? = null
+        private var contextMenu: com.alexdremov.notate.ui.dialog.CanvasContextMenu? = null
         private lateinit var gestureDetector: android.view.GestureDetector
 
         init {
@@ -218,7 +225,7 @@ class OnyxCanvasView
                     context,
                     object : android.view.GestureDetector.SimpleOnGestureListener() {
                         override fun onLongPress(e: MotionEvent) {
-                            if (viewportInteractor.isBusy()) return
+                            if (viewportInteractor.isBusy() || isReadOnly) return
 
                             viewScope.launch {
                                 // Compute fresh inverse to ensure hit test is accurate
@@ -238,19 +245,40 @@ class OnyxCanvasView
                                     selectionInteractor.onLongPressDragStart(e.x, e.y)
                                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                                 } else {
-                                    // Show Contextual Menu (Paste / Insert Image)
-                                    pastePopup =
-                                        com.alexdremov.notate.ui.dialog.PasteActionPopup(
+                                    // Show Contextual Menu
+                                    contextMenu =
+                                        com.alexdremov.notate.ui.dialog.CanvasContextMenu(
                                             context,
                                             onPaste = {
                                                 viewScope.launch { canvasController.paste(worldX, worldY) }
                                             },
                                             onPasteImage = { onRequestInsertImage?.invoke() },
+                                            onInsertLink = { showLinkDialog(worldX, worldY) },
                                         )
-                                    pastePopup?.show(this@OnyxCanvasView, e.x, e.y)
+                                    contextMenu?.show(this@OnyxCanvasView, e.x, e.y)
                                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                                 }
                             }
+                        }
+
+                        override fun onDoubleTap(e: MotionEvent): Boolean {
+                            if (viewportInteractor.isBusy() || isReadOnly) return false
+
+                            viewScope.launch {
+                                val inv = Matrix()
+                                matrix.invert(inv)
+                                val pts = floatArrayOf(e.x, e.y)
+                                inv.mapPoints(pts)
+                                val worldX = pts[0]
+                                val worldY = pts[1]
+
+                                val item = canvasController.getItemAt(worldX, worldY)
+                                if (item is com.alexdremov.notate.model.LinkItem) {
+                                    showLinkDialog(worldX, worldY, item)
+                                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                }
+                            }
+                            return true
                         }
 
                         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -263,6 +291,13 @@ class OnyxCanvasView
                                 val worldY = pts[1]
 
                                 val item = canvasController.getItemAt(worldX, worldY)
+
+                                if (item is com.alexdremov.notate.model.LinkItem) {
+                                    onLinkActivated?.invoke(item)
+                                    return@launch
+                                }
+
+                                if (isReadOnly) return@launch
 
                                 if (currentTool.type == ToolType.TEXT) {
                                     if (item is TextItem) {
@@ -282,6 +317,42 @@ class OnyxCanvasView
                         }
                     },
                 )
+        }
+
+        private fun showLinkDialog(
+            x: Float,
+            y: Float,
+            existingItem: com.alexdremov.notate.model.LinkItem? = null,
+        ) {
+            val dialog =
+                com.alexdremov.notate.ui.dialog.InsertLinkDialog(
+                    context,
+                    existingItem = existingItem,
+                    onConfirm = { label, target, type ->
+                        viewScope.launch {
+                            if (existingItem != null) {
+                                canvasController.updateLink(existingItem, label, target, type)
+                            } else {
+                                canvasController.addLink(
+                                    label,
+                                    target,
+                                    type,
+                                    x,
+                                    y,
+                                    fontSize = 24f, // Default font size
+                                    color = Color.BLACK,
+                                )
+                            }
+                        }
+                    },
+                    onBrowse = { callback ->
+                        onBrowseFiles?.invoke(callback)
+                    },
+                    onSelectFile = { callback ->
+                        onSelectFile?.invoke(callback)
+                    },
+                )
+            dialog.show()
         }
 
         private fun showTextEditor(
@@ -318,7 +389,7 @@ class OnyxCanvasView
             val isStylus = event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
             if (isStylus) return false // Handled by RawInputCallback
 
-            detectTwoFingerTap(event)
+            if (!isReadOnly) detectTwoFingerTap(event)
 
             // 1. Gesture Detector (Long Press, Tap)
             if (gestureDetector.onTouchEvent(event)) {
@@ -326,19 +397,21 @@ class OnyxCanvasView
             }
 
             // 2. Selection Interaction (High Priority)
-            val action = event.actionMasked
-            if (action == MotionEvent.ACTION_DOWN) {
-                if (selectionInteractor.onDown(event.x, event.y)) {
-                    return true
+            if (!isReadOnly) {
+                val action = event.actionMasked
+                if (action == MotionEvent.ACTION_DOWN) {
+                    if (selectionInteractor.onDown(event.x, event.y)) {
+                        return true
+                    }
+                } else if (action == MotionEvent.ACTION_POINTER_DOWN) {
+                    selectionInteractor.onPointerDown(event)
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    if (selectionInteractor.onMove(event)) {
+                        return true
+                    }
+                } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    selectionInteractor.onUp()
                 }
-            } else if (action == MotionEvent.ACTION_POINTER_DOWN) {
-                selectionInteractor.onPointerDown(event)
-            } else if (action == MotionEvent.ACTION_MOVE) {
-                if (selectionInteractor.onMove(event)) {
-                    return true
-                }
-            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                selectionInteractor.onUp()
             }
 
             // 3. Viewport Interaction (Pan/Zoom) - Only if selection didn't consume
@@ -465,6 +538,13 @@ class OnyxCanvasView
             }
         }
 
+        private var pendingEpdUpdateMode: UpdateMode? = null
+
+        fun requestEpdRefresh(mode: UpdateMode = UpdateMode.GC) {
+            pendingEpdUpdateMode = mode
+            invalidateCanvas()
+        }
+
         private fun drawContent() {
             com.alexdremov.notate.util.PerformanceProfiler.trace("OnyxCanvasView.drawContent") {
                 val cv =
@@ -547,6 +627,16 @@ class OnyxCanvasView
                 } finally {
                     holder.unlockCanvasAndPost(cv)
                 }
+
+                val mode = pendingEpdUpdateMode
+                pendingEpdUpdateMode = null
+                if (mode != null) {
+                    if (mode == UpdateMode.GC) {
+                        performHardRefresh()
+                    } else {
+                        EpdController.invalidate(this@OnyxCanvasView, mode)
+                    }
+                }
             }
         }
 
@@ -597,7 +687,8 @@ class OnyxCanvasView
         fun setTool(tool: PenTool) {
             this.currentTool = tool
             penInputHandler.setTool(tool)
-            performHardRefresh()
+            // No need for performHardRefresh() here, it causes flickering on every tool switch.
+            // penInputHandler will handle hardware tool updates if needed.
         }
 
         fun setEraser(tool: PenTool) {
@@ -611,7 +702,7 @@ class OnyxCanvasView
         suspend fun setBackgroundStyle(style: com.alexdremov.notate.model.BackgroundStyle) {
             canvasModel.setBackground(style)
             invalidateCanvas()
-            performHardRefresh()
+            performHardRefresh() // Still needed for background style change
             onContentChanged?.invoke()
         }
 
@@ -621,9 +712,18 @@ class OnyxCanvasView
             if (enabled) {
                 setupTouchHelper()
             } else {
+                // Keep touchHelper active but disable hardware inking to maintain palm rejection
+                touchHelper?.setRawDrawingRenderEnabled(false)
                 touchHelper?.setRawDrawingEnabled(false)
-                touchHelper?.closeRawDrawing()
                 EpdController.setScreenHandWritingPenState(this, EpdPenManager.PEN_PAUSE)
+            }
+        }
+
+        fun setReadOnly(readOnly: Boolean) {
+            isReadOnly = readOnly
+            setDrawingEnabled(!readOnly)
+            if (readOnly) {
+                viewScope.launch { canvasController.clearSelection() }
             }
         }
 
@@ -655,14 +755,18 @@ class OnyxCanvasView
                 return
             }
 
-            canvasModel.undo()?.let { canvasRenderer.invalidateTiles(it) }
-            refreshAfterEdit()
+            canvasModel.undo()?.let {
+                canvasRenderer.invalidateTiles(it)
+                refreshAfterEdit(it)
+            }
             onContentChanged?.invoke()
         }
 
         suspend fun redo() {
-            canvasModel.redo()?.let { canvasRenderer.invalidateTiles(it) }
-            refreshAfterEdit()
+            canvasModel.redo()?.let {
+                canvasRenderer.invalidateTiles(it)
+                refreshAfterEdit(it)
+            }
             onContentChanged?.invoke()
         }
 
@@ -693,7 +797,7 @@ class OnyxCanvasView
 
         fun dismissActionPopup() {
             actionPopup?.dismiss()
-            pastePopup?.dismiss()
+            contextMenu?.dismiss()
         }
 
         fun refreshScreen() {
@@ -751,13 +855,25 @@ class OnyxCanvasView
             }
         }
 
-        private fun refreshAfterEdit() {
+        private fun refreshAfterEdit(bounds: RectF? = null) {
             val visibleRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
             matrix.invert(inverseMatrix)
             inverseMatrix.mapRect(visibleRect)
-            canvasRenderer.refreshTiles(viewportInteractor.getCurrentScale(), visibleRect)
+
+            // Only refresh tiles that are actually visible
+            val refreshBounds = bounds ?: visibleRect
+            if (RectF.intersects(refreshBounds, visibleRect)) {
+                canvasRenderer.refreshTiles(viewportInteractor.getCurrentScale(), refreshBounds)
+            }
+
             minimapDrawer?.setDirty()
             drawContent()
-            performHardRefresh()
+
+            // Use DU for fast visual update after undo/redo instead of full GC refresh
+            EpdController.invalidate(this, UpdateMode.DU)
+        }
+
+        fun notifyStrokeFinished() {
+            lastStrokeEndTime = System.currentTimeMillis()
         }
     }
