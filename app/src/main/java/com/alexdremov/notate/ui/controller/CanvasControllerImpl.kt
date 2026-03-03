@@ -492,7 +492,7 @@ class CanvasControllerImpl(
                     fontSize = fontSize,
                     color = color,
                     logicalBounds = logical,
-                    bounds = RectF(logical),
+                    bounds = RectF(logical).apply { inset(-5f, -5f) },
                 )
 
             val added = model.addItem(textItem)
@@ -559,6 +559,7 @@ class CanvasControllerImpl(
             val newAabb =
                 com.alexdremov.notate.util.StrokeGeometry
                     .computeRotatedBounds(newLogical, oldItem.rotation)
+            newAabb.inset(-5f, -5f)
 
             val newItem = oldItem.copy(text = newText, logicalBounds = newLogical, bounds = newAabb)
 
@@ -616,7 +617,7 @@ class CanvasControllerImpl(
                     fontSize = fontSize,
                     color = color,
                     logicalBounds = logical,
-                    bounds = RectF(logical),
+                    bounds = RectF(logical).apply { inset(-10f, -10f) },
                 )
 
             val added = model.addItem(linkItem)
@@ -903,7 +904,7 @@ class CanvasControllerImpl(
             }
 
             is com.alexdremov.notate.model.TextItem -> {
-                val (newLogical, newRotation, newAabb) =
+                val (newLogical, newRotation, _) =
                     StrokeGeometry.transformItemLogicalBounds(
                         item.logicalBounds,
                         item.rotation,
@@ -923,6 +924,7 @@ class CanvasControllerImpl(
                 // Update newLogical's height and recompute AABB
                 newLogical.bottom = newLogical.top + newHeight
                 val finalAabb = StrokeGeometry.computeRotatedBounds(newLogical, newRotation)
+                finalAabb.inset(-5f, -5f) // Safety margin
 
                 item.copy(
                     logicalBounds = newLogical,
@@ -968,6 +970,7 @@ class CanvasControllerImpl(
 
                 // Recompute rotated AABB based on updated logical bounds
                 val finalAabb = StrokeGeometry.computeRotatedBounds(finalLogical, newRotation)
+                finalAabb.inset(-10f, -10f) // Safety margin for border
 
                 item.copy(
                     logicalBounds = finalLogical,

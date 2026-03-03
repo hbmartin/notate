@@ -50,6 +50,7 @@ object LinkRenderer {
         val originalStyle = paint.style
         val originalColor = paint.color
         val originalStrokeWidth = paint.strokeWidth
+        val xfermode = paint.xfermode
 
         val scale = getScale(item.fontSize)
         val cornerRadius = BASE_CORNER_RADIUS * scale
@@ -66,31 +67,43 @@ object LinkRenderer {
         // Shadow effect could be added here if needed
         canvas.drawRoundRect(item.logicalBounds, cornerRadius, cornerRadius, paint)
 
-        // Draw Border (Non-Scaling Stroke)
-        paint.style = Paint.Style.STROKE
-        paint.color = item.color
-        val effectiveScale = if (canvasScale > 0) canvasScale else 1.0f
-        paint.strokeWidth = 2f / effectiveScale
-        canvas.drawRoundRect(item.logicalBounds, cornerRadius, cornerRadius, paint)
+        // If we are in a clearing/masking mode (e.g. from hideItemsInCache or Eraser),
+        // the background fill above already cleared/masked the area. 
+        // We MUST NOT draw the icon or text as they might not respect the xfermode (Drawables)
+        // or would just be redundant work.
+        if (xfermode == null) {
+            // Draw Border (Non-Scaling Stroke)
+            paint.style = Paint.Style.STROKE
+            paint.color = item.color
+            val effectiveScale = if (canvasScale > 0) canvasScale else 1.0f
+            paint.strokeWidth = 2f / effectiveScale
+            canvas.drawRoundRect(item.logicalBounds, cornerRadius, cornerRadius, paint)
 
-        // Draw Icon and Text
-        val contentLeft = item.logicalBounds.left + BASE_PADDING_X * scale
-        val contentCenterY = item.logicalBounds.centerY()
-        val iconSize = BASE_ICON_SIZE * scale
+            // Draw Icon and Text
+            val contentLeft = item.logicalBounds.left + BASE_PADDING_X * scale
+            val contentCenterY = item.logicalBounds.centerY()
+            val iconSize = BASE_ICON_SIZE * scale
 
-        // Icon
-        drawIcon(canvas, item.type, contentLeft, contentCenterY, iconSize, paint, context, item.color)
+            // Icon
+            drawIcon(canvas, item.type, contentLeft, contentCenterY, iconSize, paint, context, item.color)
 
-        // Text
-        val textLeft = contentLeft + iconSize + BASE_ICON_PADDING * scale
-        paint.style = Paint.Style.FILL
-        paint.color = item.color // Text same color as border/icon
-        paint.textSize = item.fontSize
-        paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
-        // Align text vertically
-        val fontMetrics = paint.fontMetrics
-        val textY = contentCenterY - (fontMetrics.descent + fontMetrics.ascent) / 2
-        canvas.drawText(item.label, textLeft, textY, paint)
+            // Text
+            val textLeft = contentLeft + iconSize + BASE_ICON_PADDING * scale
+            paint.style = Paint.Style.FILL
+            paint.color = item.color // Text same color as border/icon
+            paint.textSize = item.fontSize
+            paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
+            // Align text vertically
+            val fontMetrics = paint.fontMetrics
+            val textY = contentCenterY - (fontMetrics.descent + fontMetrics.ascent) / 2
+            canvas.drawText(item.label, textLeft, textY, paint)
+        } else {
+            // Also clear the border area if we are in CLEAR mode
+            paint.style = Paint.Style.STROKE
+            val effectiveScale = if (canvasScale > 0) canvasScale else 1.0f
+            paint.strokeWidth = 2f / effectiveScale
+            canvas.drawRoundRect(item.logicalBounds, cornerRadius, cornerRadius, paint)
+        }
 
         // Restore paint and canvas
         paint.style = originalStyle

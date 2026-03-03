@@ -239,15 +239,10 @@ class OnyxCanvasView
                                 val item = canvasController.getItemAt(worldX, worldY)
 
                                 if (item != null) {
-                                    if (item is com.alexdremov.notate.model.LinkItem) {
-                                        // Edit existing link
-                                        showLinkDialog(worldX, worldY, item)
-                                    } else {
-                                        canvasController.clearSelection()
-                                        canvasController.selectItem(item)
-                                        // Hand off to Interactor to start drag
-                                        selectionInteractor.onLongPressDragStart(e.x, e.y)
-                                    }
+                                    canvasController.clearSelection()
+                                    canvasController.selectItem(item)
+                                    // Hand off to Interactor to start drag
+                                    selectionInteractor.onLongPressDragStart(e.x, e.y)
                                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                                 } else {
                                     // Show Contextual Menu
@@ -264,6 +259,26 @@ class OnyxCanvasView
                                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                                 }
                             }
+                        }
+
+                        override fun onDoubleTap(e: MotionEvent): Boolean {
+                            if (viewportInteractor.isBusy() || isReadOnly) return false
+
+                            viewScope.launch {
+                                val inv = Matrix()
+                                matrix.invert(inv)
+                                val pts = floatArrayOf(e.x, e.y)
+                                inv.mapPoints(pts)
+                                val worldX = pts[0]
+                                val worldY = pts[1]
+
+                                val item = canvasController.getItemAt(worldX, worldY)
+                                if (item is com.alexdremov.notate.model.LinkItem) {
+                                    showLinkDialog(worldX, worldY, item)
+                                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                }
+                            }
+                            return true
                         }
 
                         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -312,6 +327,7 @@ class OnyxCanvasView
             val dialog =
                 com.alexdremov.notate.ui.dialog.InsertLinkDialog(
                     context,
+                    existingItem = existingItem,
                     onConfirm = { label, target, type ->
                         viewScope.launch {
                             if (existingItem != null) {
