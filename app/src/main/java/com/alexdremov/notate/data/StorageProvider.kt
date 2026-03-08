@@ -113,17 +113,17 @@ internal object StorageUtils {
 
         return try {
             streamProvider()?.use { rawStream ->
+                val bufferSize = 1024
                 val stream = if (rawStream.markSupported()) rawStream else java.io.BufferedInputStream(rawStream)
-                stream.mark(4)
-                val signature = ByteArray(4)
-                val read = stream.read(signature)
+                stream.mark(bufferSize)
+                val buffer = ByteArray(bufferSize)
+                val read = stream.read(buffer)
                 stream.reset()
 
-                if (read >= 4 && signature[0] == 0x50.toByte() && signature[1] == 0x4B.toByte()) {
+                if (isZipSignature(buffer, read)) {
                     // ZIP format
-                    // Logger.d("Metadata", "Extracting from ZIP: $fileName")
                     extractMetadataZip(stream)
-                } else if (read > 0 && signature[0] == 0x7B.toByte()) {
+                } else if (isJsonLike(buffer, read)) {
                     // JSON format
                     extractMetadataJson(stream)
                 } else {
@@ -135,6 +135,37 @@ internal object StorageUtils {
             Logger.e("Metadata", "Failed to identify/read file format: $fileName", e)
             null
         }
+    }
+
+    private fun isZipSignature(
+        buffer: ByteArray,
+        read: Int,
+    ): Boolean =
+        read >= 4 &&
+            buffer[0] == 0x50.toByte() && // 'P'
+            buffer[1] == 0x4B.toByte() && // 'K'
+            buffer[2] == 0x03.toByte() &&
+            buffer[3] == 0x04.toByte()
+
+    private fun isJsonLike(
+        buffer: ByteArray,
+        read: Int,
+    ): Boolean {
+        if (read <= 0) return false
+        var index = 0
+        // Skip BOM
+        if (read >= 3 &&
+            buffer[0] == 0xEF.toByte() &&
+            buffer[1] == 0xBB.toByte() &&
+            buffer[2] == 0xBF.toByte()
+        ) {
+            index = 3
+        }
+        // Skip leading whitespace
+        while (index < read && buffer[index].toInt().toChar().isWhitespace()) {
+            index++
+        }
+        return index < read && buffer[index] == 0x7B.toByte() // '{'
     }
 
     private fun extractMetadataZip(stream: InputStream): CanvasDataPreview? {
@@ -264,6 +295,66 @@ internal object StorageUtils {
             )
             null
         }
+
+    fun updateMetadata(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag>,
+        uuid: String? = null,
+    ) {
+        val rawStream = if (inputStream.markSupported()) inputStream else java.io.BufferedInputStream(inputStream)
+        val bufferSize = 1024
+        rawStream.mark(bufferSize)
+        val buffer = ByteArray(bufferSize)
+        val read = rawStream.read(buffer)
+        rawStream.reset()
+
+        if (isZipSignature(buffer, read)) {
+            // ZIP format
+            updateMetadataZip(rawStream, outputStream, tagIds, tagDefinitions, uuid)
+        } else if (isJsonLike(buffer, read)) {
+            // JSON format
+            if (uuid != null) {
+                injectUuidIntoJson(rawStream, outputStream, uuid)
+            } else {
+                rawStream.copyTo(outputStream)
+            }
+        } else {
+            // Legacy Protobuf
+            createUpdatedProtobuf(rawStream, outputStream, tagIds, tagDefinitions, uuid)
+        }
+    }
+
+    private fun updateMetadataZip(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag>,
+        uuid: String? = null,
+    ) {
+        val zis = java.util.zip.ZipInputStream(inputStream)
+        val zos = java.util.zip.ZipOutputStream(outputStream)
+
+        try {
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val newEntry = java.util.zip.ZipEntry(entry.name)
+                newEntry.time = entry.time
+                zos.putNextEntry(newEntry)
+
+                if (entry.name == "manifest.bin") {
+                    createUpdatedProtobuf(zis, zos, tagIds, tagDefinitions, uuid)
+                } else {
+                    zis.copyTo(zos)
+                }
+                zos.closeEntry()
+                entry = zis.nextEntry
+            }
+        } finally {
+            zos.finish()
+        }
+    }
 
     fun createUpdatedProtobuf(
         inputStream: InputStream,
@@ -692,7 +783,7 @@ class LocalStorageProvider(
         val file = File(path)
         if (!file.exists() || file.isDirectory) return false
 
-        if (file.extension != "notate") return false
+        if (file.extension != "notate" && file.extension != "json") return false
 
         // Acquire lock to ensure we don't modify an open file
         val lock =
@@ -708,7 +799,7 @@ class LocalStorageProvider(
         return try {
             file.inputStream().use { input ->
                 tempFile.outputStream().use { output ->
-                    StorageUtils.createUpdatedProtobuf(input, output, tagIds, tagDefinitions)
+                    StorageUtils.updateMetadata(input, output, tagIds, tagDefinitions)
                 }
             }
             Files.move(
@@ -808,20 +899,13 @@ class LocalStorageProvider(
             val tempFile = File(file.parent, file.name + ".tmp")
             file.inputStream().use { input ->
                 tempFile.outputStream().use { output ->
-                    if (file.extension == "notate") {
-                        StorageUtils.createUpdatedProtobuf(
-                            input,
-                            output,
-                            meta?.tagIds ?: emptyList(),
-                            meta?.tagDefinitions ?: emptyList(),
-                            newUuid,
-                        )
-                    } else if (file.extension == "json") {
-                        StorageUtils.injectUuidIntoJson(input, output, newUuid)
-                    } else {
-                        // Fallback copy if unsupported format but somehow reached here
-                        input.copyTo(output)
-                    }
+                    StorageUtils.updateMetadata(
+                        input,
+                        output,
+                        meta?.tagIds ?: emptyList(),
+                        meta?.tagDefinitions ?: emptyList(),
+                        newUuid,
+                    )
                 }
             }
             Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
@@ -839,13 +923,6 @@ class SafStorageProvider(
     private val context: Context,
     private val rootUriString: String,
 ) : StorageProvider {
-    companion object {
-        // Process-level synchronization for SAF operations to prevent race conditions
-        private val safMutexes = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
-
-        private fun getMutex(uri: String): kotlinx.coroutines.sync.Mutex = safMutexes.getOrPut(uri) { kotlinx.coroutines.sync.Mutex() }
-    }
-
     override fun isApplicable(path: String?): Boolean = path != null && path.startsWith("content://")
 
     override fun getRootPath(): String = rootUriString
@@ -1037,37 +1114,33 @@ class SafStorageProvider(
         if (file.isDirectory) return false
         // Basic check for file extension from name
         val name = file.name ?: ""
-        if (!name.endsWith(".notate")) return false
+        if (!name.endsWith(".notate") && !name.endsWith(".json")) return false
 
-        val mutex = getMutex(path)
         val tempFile = File.createTempFile("saf_update", ".tmp", context.cacheDir)
 
-        // Blocking synchronized block for shared mutex across threads
-        return synchronized(mutex) {
-            try {
-                val meta = getFileMetadata(path)
-                val uuid =
-                    meta?.uuid ?: java.util.UUID
-                        .randomUUID()
-                        .toString()
+        return try {
+            val meta = getFileMetadata(path)
+            val uuid =
+                meta?.uuid ?: java.util.UUID
+                    .randomUUID()
+                    .toString()
 
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    tempFile.outputStream().use { output ->
-                        StorageUtils.createUpdatedProtobuf(input, output, tagIds, tagDefinitions, uuid)
-                    }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    StorageUtils.updateMetadata(input, output, tagIds, tagDefinitions, uuid)
                 }
-                context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
-                    tempFile.inputStream().use { input ->
-                        input.copyTo(output)
-                    }
-                }
-                true
-            } catch (e: Exception) {
-                Logger.e("Storage", "Failed to set tags SAF", e, showToUser = true)
-                false
-            } finally {
-                tempFile.delete()
             }
+            context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                tempFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to set tags SAF", e, showToUser = true)
+            false
+        } finally {
+            tempFile.delete()
         }
     }
 
@@ -1176,56 +1249,41 @@ class SafStorageProvider(
         var meta = getFileMetadata(path)
         if (meta?.uuid != null && !force) return meta.uuid
 
-        val mutex = getMutex(path)
-        val resultUuid: String?
+        var resultUuid: String? = null
 
-        synchronized(mutex) {
-            // 2. Re-check after lock
-            meta = getFileMetadata(path)
-            if (meta?.uuid != null && !force) {
-                resultUuid = meta.uuid
-            } else {
-                // 3. Generate new
-                val newUuid =
-                    java.util.UUID
-                        .randomUUID()
-                        .toString()
-                Logger.i("Storage", "ensureUuid (SAF): Generating new UUID $newUuid for $path (Force=$force)")
+        // 2. Re-check after lock logic would go here if we had one for SAF, but we use temp files
+        // 3. Generate new
+        val newUuid =
+            java.util.UUID
+                .randomUUID()
+                .toString()
+        Logger.i("Storage", "ensureUuid (SAF): Generating new UUID $newUuid for $path (Force=$force)")
 
-                // 4. Write
-                val tempFile = File.createTempFile("saf_update_uuid", ".tmp", context.cacheDir)
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        tempFile.outputStream().use { output ->
-                            val name = file.name ?: ""
-                            if (name.endsWith(".notate")) {
-                                StorageUtils.createUpdatedProtobuf(
-                                    input,
-                                    output,
-                                    meta?.tagIds ?: emptyList(),
-                                    meta?.tagDefinitions ?: emptyList(),
-                                    newUuid,
-                                )
-                            } else if (name.endsWith(".json")) {
-                                StorageUtils.injectUuidIntoJson(input, output, newUuid)
-                            } else {
-                                input.copyTo(output)
-                            }
-                        }
-                    }
-                    context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
-                        tempFile.inputStream().use { input ->
-                            input.copyTo(output)
-                        }
-                    }
-                    resultUuid = newUuid
-                } catch (e: Exception) {
-                    Logger.e("Storage", "Failed to ensure UUID SAF", e)
-                    return null
-                } finally {
-                    tempFile.delete()
+        // 4. Write
+        val tempFile = File.createTempFile("saf_update_uuid", ".tmp", context.cacheDir)
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    StorageUtils.updateMetadata(
+                        input,
+                        output,
+                        meta?.tagIds ?: emptyList(),
+                        meta?.tagDefinitions ?: emptyList(),
+                        newUuid,
+                    )
                 }
             }
+            context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                tempFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            resultUuid = newUuid
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to ensure UUID SAF", e)
+            return null
+        } finally {
+            tempFile.delete()
         }
         return resultUuid
     }
