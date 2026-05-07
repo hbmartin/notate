@@ -30,6 +30,7 @@ import com.alexdremov.notate.CanvasActivity
 import com.alexdremov.notate.data.CanvasItem
 import com.alexdremov.notate.data.ProjectItem
 import com.alexdremov.notate.data.SortOption
+import com.alexdremov.notate.data.RemoteStorageType
 import com.alexdremov.notate.ui.home.*
 import com.alexdremov.notate.ui.home.components.DeleteConfirmationDialog
 import com.alexdremov.notate.ui.theme.NotateTheme
@@ -503,6 +504,8 @@ fun MainScreen(
         )
     }
 
+    var refreshStoragesTrigger by remember { mutableStateOf(0) }
+
     if (showRemoteStorages) {
         RemoteStorageListDialog(
             onDismiss = { showRemoteStorages = false },
@@ -510,6 +513,7 @@ fun MainScreen(
                 editingStorage = storage
                 showEditStorage = true
             },
+            refreshTrigger = refreshStoragesTrigger,
         )
     }
 
@@ -528,14 +532,15 @@ fun MainScreen(
                 com.alexdremov.notate.data.SyncPreferencesManager
                     .saveRemoteStorages(context, current)
 
-                if (password.isNotBlank()) {
+                if (config.type == RemoteStorageType.WEBDAV) {
                     com.alexdremov.notate.data.SyncPreferencesManager
                         .savePassword(context, config.id, password)
+                } else {
+                    com.alexdremov.notate.data.SyncPreferencesManager
+                        .savePassword(context, config.id, "")
                 }
                 showEditStorage = false
-                // Force refresh of the list dialog by toggling visibility (optional, but helps if state isn't observed)
-                showRemoteStorages = false
-                showRemoteStorages = true
+                refreshStoragesTrigger++
             },
         )
     }
