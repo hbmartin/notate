@@ -10,10 +10,6 @@ plugins {
     id("jacoco")
 }
 
-configurations.all {
-    exclude(group = "xpp3", module = "xpp3")
-}
-
 android {
     namespace = "com.alexdremov.notate"
     compileSdk = 36
@@ -190,7 +186,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
     implementation("com.squareup.okhttp3:logging-interceptor:5.3.2")
     implementation("com.github.bitfireAT:dav4jvm:2.2.1") {
-        exclude(group = "xpp3", module = "xpp3")
+        exclude(group = "org.ogce", module = "xpp3")
     }
 
     // Google Drive
