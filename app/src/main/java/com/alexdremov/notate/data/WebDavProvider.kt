@@ -23,24 +23,32 @@ import java.util.concurrent.TimeUnit
 class WebDavProvider(
     private val config: RemoteStorageConfig,
     private val password: String,
+    client: OkHttpClient? = null,
 ) : RemoteStorageProvider {
-    private val client =
-        OkHttpClient
-            .Builder()
-            .connectTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS) // Increased to allow slow uploads
-            .writeTimeout(120, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .addInterceptor { chain ->
-                val request =
-                    chain
-                        .request()
-                        .newBuilder()
-                        .header("Authorization", Credentials.basic(config.username ?: "", password))
-                        .build()
-                chain.proceed(request)
-            }.build()
+    private val client: OkHttpClient = client ?: createDefaultClient(config, password)
+
+    companion object {
+        private fun createDefaultClient(
+            config: RemoteStorageConfig,
+            password: String,
+        ): OkHttpClient =
+            OkHttpClient
+                .Builder()
+                .connectTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS) // Increased to allow slow uploads
+                .writeTimeout(120, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .addInterceptor { chain ->
+                    val request =
+                        chain
+                            .request()
+                            .newBuilder()
+                            .header("Authorization", Credentials.basic(config.username ?: "", password))
+                            .build()
+                    chain.proceed(request)
+                }.build()
+    }
 
     private fun getBaseUrl(): HttpUrl {
         val base = config.baseUrl?.trimEnd('/') ?: ""
@@ -169,7 +177,9 @@ class WebDavProvider(
                 Request
                     .Builder()
                     .url(url)
-                    .header("Expect", "100-continue") // Prevents OkHttp from stalling if Yandex WebDAV pauses the socket
+                    // Do not force "Expect: 100-continue":
+                    // some HTTP/2 WebDAV deployments (e.g. behind Nginx) may stall PUT uploads
+                    // when this header is sent unconditionally.
                     .put(body)
                     .build()
 
