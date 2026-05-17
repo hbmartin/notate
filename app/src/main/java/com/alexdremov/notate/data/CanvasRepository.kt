@@ -43,6 +43,7 @@ class CanvasRepository(
         val savedPath: String,
         val newLastModified: Long,
         val newSize: Long,
+        val isConflict: Boolean = false,
     )
 
     private val sessionsDir: File by lazy {
@@ -87,21 +88,39 @@ class CanvasRepository(
                 val sessionName = hashPath(path)
                 Logger.d("CanvasRepository", "Opening session for: $path (Hash: $sessionName)")
 
-                // 1. Check Active Session Cache (Hot Handoff - Same Process)
+                // 1. Get Initial Origin Info for Cache Check
+                val (initialOriginTime, initialOriginSize) = StorageUtils.getOriginInfo(context, path)
+
+                // 2. Check Active Session Cache (Hot Handoff - Same Process)
                 val existingSession = activeSessions[sessionName]
                 if (existingSession != null && !existingSession.isClosed()) {
-                    val newCount = existingSession.retain()
-                    Logger.i("CanvasRepository", "Attaching to active in-memory session. Clients: $newCount")
-                    return@withContext existingSession
+                    // VERIFY ORIGIN even for cached session!
+                    val originMatches = (
+                        existingSession.originLastModified == initialOriginTime &&
+                            existingSession.originSize == initialOriginSize
+                    )
+
+                    if (originMatches) {
+                        val newCount = existingSession.retain()
+                        Logger.i("CanvasRepository", "Attaching to active in-memory session. Clients: $newCount")
+                        return@withContext existingSession
+                    } else {
+                        Logger.w(
+                            "CanvasRepository",
+                            "Active in-memory session is stale (Origin mismatch: ${existingSession.originLastModified} vs $initialOriginTime). Closing and reloading.",
+                        )
+                        activeSessions.remove(sessionName)
+                        existingSession.close()
+                    }
                 }
 
-                // Remove stale reference
-                if (existingSession != null) {
+                // Remove stale reference if it was closed
+                if (existingSession != null && existingSession.isClosed()) {
                     activeSessions.remove(sessionName)
-                    Logger.d("CanvasRepository", "Removed stale in-memory session reference")
+                    Logger.d("CanvasRepository", "Removed closed in-memory session reference")
                 }
 
-                // 2. Acquire System File Lock (Cross-Process Exclusion)
+                // 3. Acquire System File Lock (Cross-Process Exclusion)
                 var fileLock: FileLockManager.LockedFileHandle? = null
                 if (!path.startsWith("content://")) {
                     var attempts = 0
@@ -125,19 +144,17 @@ class CanvasRepository(
                 try {
                     val sessionDir = File(sessionsDir, sessionName)
 
-                    // Track source info
-                    val originFile = if (path.startsWith("content://")) null else File(path)
-                    val originLastModified = originFile?.lastModified() ?: 0L
-                    val originSize = originFile?.length() ?: 0L
-
+                    // 4. Capture FINAL Origin Info (after acquire() might have created the file)
+                    val (originLastModified, originSize) = StorageUtils.getOriginInfo(context, path)
                     Logger.d("CanvasRepository", "Origin File Info - Time: ${formatTime(originLastModified)}, Size: $originSize")
 
-                    // 3. Initialize Session Directory
+                    // 5. Initialize Session Directory
                     var sessionValid = false
                     if (sessionDir.exists()) {
                         // Check if we can resume this session (crash recovery / persistence)
                         val manifestFile = File(sessionDir, "manifest.bin")
                         val sourcePathFile = File(sessionDir, "source_path.txt")
+                        val originInfoFile = File(sessionDir, "origin_info.txt")
 
                         if (manifestFile.exists()) {
                             val storedPath = if (sourcePathFile.exists()) sourcePathFile.readText().trim() else ""
@@ -157,26 +174,81 @@ class CanvasRepository(
                                     }
                                 }
 
-                                // Check timestamps to ensure the session cache isn't older than the file
-                                if (originFile != null && originFile.exists()) {
-                                    val manifestTime = manifestFile.lastModified()
-                                    Logger.d(
-                                        "CanvasRepository",
-                                        "Checking Recovery: ManifestTime=${formatTime(
-                                            manifestTime,
-                                        )} vs OriginTime=${formatTime(originLastModified)}",
-                                    )
+                                // Check timestamps to ensure the session cache matches the file on disk
+                                var expectedTime = -1L
+                                var expectedSize = -1L
+                                if (originInfoFile.exists()) {
+                                    try {
+                                        val lines = originInfoFile.readLines()
+                                        if (lines.size >= 2) {
+                                            expectedTime = lines[0].toLongOrNull() ?: -1L
+                                            expectedSize = lines[1].toLongOrNull() ?: -1L
+                                        }
+                                    } catch (e: Exception) {
+                                        Logger.e("CanvasRepository", "Failed to read origin_info.txt", e)
+                                    }
+                                }
 
-                                    if (manifestTime > originLastModified) {
-                                        Logger.i("CanvasRepository", "Resuming existing session (Cache is newer than file)")
+                                val manifestTime = manifestFile.lastModified()
+                                val originMatches = (originLastModified == expectedTime && originSize == expectedSize)
+
+                                if (originMatches) {
+                                    // Use >= because on some systems creation of locked file and manifest can happen in same millisecond
+                                    if (manifestTime >= originLastModified) {
+                                        Logger.i("CanvasRepository", "Resuming existing session (File matches cache origin)")
                                         sessionValid = true
                                     } else {
-                                        Logger.i("CanvasRepository", "Existing session stale. Reloading from file. (Manifest <= Origin)")
+                                        Logger.i("CanvasRepository", "Existing session stale (Manifest older than Origin). Reloading.")
+                                        sessionValid = false
                                     }
                                 } else {
-                                    // Remote file - assume valid if path matches
-                                    Logger.i("CanvasRepository", "Resuming existing session (Remote file or origin missing)")
-                                    sessionValid = true
+                                    // Origin mismatch! (File was replaced, modified externally, or we have no record)
+
+                                    // Stronger verification: Check UUID in the file on disk if it exists
+                                    val diskMeta = StorageUtils.extractMetadata(path, { openInputStream(path) }, originSize)
+                                    val diskUuid = diskMeta?.uuid
+
+                                    val cachedMetaBytes =
+                                        try {
+                                            manifestFile.readBytes()
+                                        } catch (e: Exception) {
+                                            null
+                                        }
+                                    val cachedUuid =
+                                        cachedMetaBytes?.let {
+                                            try {
+                                                ProtoBuf.decodeFromByteArray(CanvasData.serializer(), it).uuid
+                                            } catch (e: Exception) {
+                                                null
+                                            }
+                                        }
+
+                                    if (diskUuid != null && cachedUuid != null && diskUuid == cachedUuid) {
+                                        Logger.i(
+                                            "CanvasRepository",
+                                            "Origin mismatch by time/size but UUID matches! Trusting UUID for resume.",
+                                        )
+                                        sessionValid = true
+                                        // Update origin info so we don't have to check UUID again next time
+                                        try {
+                                            originInfoFile.writeText("$originLastModified\n$originSize")
+                                        } catch (e: Exception) {
+                                            // ignore
+                                        }
+                                    } else if (expectedTime == -1L && manifestTime >= originLastModified) {
+                                        // Legacy cache (no origin_info.txt) or crash recovery. We trust it IF it's newer or equal.
+                                        Logger.i(
+                                            "CanvasRepository",
+                                            "Resuming existing session (Legacy cache/crash recovery, newer or equal to file)",
+                                        )
+                                        sessionValid = true
+                                    } else {
+                                        Logger.w(
+                                            "CanvasRepository",
+                                            "Cache origin mismatch or stale! (File was replaced or modified externally). Reloading from file.",
+                                        )
+                                        sessionValid = false
+                                    }
                                 }
                             } else {
                                 Logger.w("CanvasRepository", "Session path mismatch: stored='$storedPath' vs requested='$path'")
@@ -197,6 +269,11 @@ class CanvasRepository(
                         }
                         sessionDir.mkdirs()
                         File(sessionDir, "source_path.txt").writeText(path)
+                        try {
+                            File(sessionDir, "origin_info.txt").writeText("$originLastModified\n$originSize")
+                        } catch (e: Exception) {
+                            Logger.e("CanvasRepository", "Failed to write origin_info.txt", e)
+                        }
 
                         val inputStream = openInputStream(path)
                         if (inputStream == null) {
@@ -595,6 +672,7 @@ class CanvasRepository(
                         }
                     }
 
+                    val isConflict = targetPath != path
                     atomicStorage.pack(session.sessionDir, targetPath)
 
                     val savedFile = File(targetPath)
@@ -604,7 +682,14 @@ class CanvasRepository(
                     // Update session origin to match what we just wrote
                     session.updateOrigin(newLastModified, newSize)
 
-                    SaveResult(targetPath, newLastModified, newSize)
+                    // Update persisted origin info for next session open
+                    try {
+                        File(session.sessionDir, "origin_info.txt").writeText("$newLastModified\n$newSize")
+                    } catch (e: Exception) {
+                        Logger.e("CanvasRepository", "Failed to update origin_info.txt after save", e)
+                    }
+
+                    SaveResult(targetPath, newLastModified, newSize, isConflict)
                 }
             } catch (e: Exception) {
                 Logger.e("CanvasRepository", "Failed to save session", e, showToUser = true)
