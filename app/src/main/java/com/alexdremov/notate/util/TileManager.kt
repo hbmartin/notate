@@ -109,6 +109,17 @@ class TileManager(
     var onTileReady: (() -> Unit)? = null
     var isInteracting: Boolean = false
 
+    @Volatile
+    var activeEraserStroke: com.alexdremov.notate.model.Stroke? = null
+
+    private val eraserOverlayPaint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
+    }
+
     private val tileCache = TileCache(tileSize)
 
     // State Tracking
@@ -164,15 +175,6 @@ class TileManager(
             color = Color.RED
             textSize = CanvasConfig.DEBUG_TEXT_SIZE_BASE
             isAntiAlias = true
-        }
-
-    private val eraserPaint =
-        Paint().apply {
-            isAntiAlias = true
-            style = Paint.Style.STROKE
-            strokeJoin = Paint.Join.ROUND
-            strokeCap = Paint.Cap.ROUND
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         }
 
     @Volatile
@@ -438,14 +440,17 @@ class TileManager(
             cancelStaleJobs(validKeys)
 
             validKeys.forEach { key ->
-                val isVisible = (startCol <= key.col) && (key.col <= endCol) && (startRow <= key.row) && (key.row <= endRow)
-                drawOrQueueTile(canvas, key.col, key.row, key.level, worldTileSize, isVisible, currentVersion, scale)
+                drawOrQueueTile(canvas, key.col, key.row, key.level, worldTileSize, false, currentVersion, scale)
             }
 
             if (CanvasConfig.DEBUG_SHOW_REGIONS) {
                 drawRegionDebugOverlay(canvas, scale)
             }
         }
+    }
+
+    fun drawEraserOverlay(canvas: Canvas, stroke: com.alexdremov.notate.model.Stroke, scale: Float) {
+        renderer.drawItemToCanvas(canvas, stroke, xfermode = android.graphics.PorterDuff.Mode.CLEAR, scale = scale)
     }
 
     private fun cancelStaleJobs(validKeys: Set<TileCache.TileKey>) {
@@ -842,13 +847,12 @@ class TileManager(
         canvas.scale(scale, scale)
         canvas.translate(-worldRect.left, -worldRect.top)
 
-        if (includeBackground && canvasModel.canvasType == com.alexdremov.notate.data.CanvasType.INFINITE) {
-            com.alexdremov.notate.ui.render.BackgroundDrawer.draw(
-                canvas,
-                canvasModel.backgroundStyle,
-                worldRect,
-                zoomLevel = scale, // Use world->screen scale for background LOD
-            )
+        // NEVER draw background in individual tiles for Infinite Canvas.
+        // The background is drawn once in the Layout layer to prevent Moire artifacts and scaling issues.
+        if (includeBackground && canvasModel.canvasType == com.alexdremov.notate.data.CanvasType.FIXED_PAGES) {
+            // Background is still drawn inside tiles for Fixed Pages as they have a bounded white area.
+            // Wait... actually, for Fixed Pages, the background is also drawn in the layout.
+            // Let's disable it here entirely to be sure.
         }
 
         Logger.v("TileManager", "  Found ${items.size} items")
@@ -1029,74 +1033,6 @@ class TileManager(
         notifyTileReady()
     }
 
-    fun updateTilesWithErasure(stroke: Stroke) {
-        val bounds = stroke.bounds
-        val snapshot = tileCache.snapshot()
-        val version = renderVersion.get()
-        val visibleRect = lastVisibleRect
-        val currentLevel = if (visibleRect != null) calculateLOD(lastScale) else -1
-
-        eraserPaint.strokeWidth = stroke.width
-
-        // Use a set for efficient intersection checks during update
-        val handledKeys = HashSet<TileCache.TileKey>()
-
-        // 1. Update/Clean Cached Tiles (Double Buffered)
-        for ((key, cachedTile) in snapshot) {
-            val oldBitmap = cachedTile.bitmap
-            if (oldBitmap == null || oldBitmap.isRecycled || oldBitmap == tileCache.errorBitmap) continue
-
-            val worldSize = calculateWorldTileSize(key.level)
-            val tileRect = getTileWorldRect(key.col, key.row, worldSize)
-
-            if (RectF.intersects(bounds, tileRect)) {
-                // Obtain a NEW bitmap for double-buffering
-                val newBitmap = tileCache.obtainBitmap()
-                val tileCanvas = Canvas(newBitmap)
-                // Copy old content
-                tileCanvas.drawBitmap(oldBitmap, 0f, 0f, null)
-
-                val scale = tileSize.toFloat() / worldSize
-                tileCanvas.save()
-                tileCanvas.scale(scale, scale)
-                tileCanvas.translate(-tileRect.left, -tileRect.top)
-
-                // Draw Eraser Path instantly
-                tileCanvas.drawPath(stroke.path, eraserPaint)
-                tileCanvas.restore()
-
-                // Atomic Swap: maintain the current version of the tile to keep it valid until next refresh
-                tileCache.put(key, newBitmap, cachedTile.version)
-
-                // If currently generating, queue refresh to ensure consistency
-                val isBeingGenerated = synchronized(generatingKeys) { generatingKeys.contains(key) }
-                if (isBeingGenerated) {
-                    queueTileGeneration(key.col, key.row, key.level, worldSize, true, version, forceRefresh = true)
-                }
-
-                handledKeys.add(key)
-            }
-        }
-
-        // 2. Handle Generating Tiles that weren't in snapshot
-        val currentGenerating = synchronized(generatingKeys) { HashSet(generatingKeys) }
-        for (key in currentGenerating) {
-            if (handledKeys.contains(key)) continue
-
-            val worldSize = calculateWorldTileSize(key.level)
-            val tileRect = getTileWorldRect(key.col, key.row, worldSize)
-
-            if (RectF.intersects(bounds, tileRect)) {
-                val isVisible = visibleRect == null || (key.level == currentLevel && RectF.intersects(visibleRect, tileRect))
-                if (isVisible) {
-                    queueTileGeneration(key.col, key.row, key.level, worldSize, true, version, forceRefresh = true)
-                }
-            }
-        }
-
-        notifyTileReady()
-    }
-
     fun invalidateTiles(bounds: RectF) {
         // Delegate to refreshTiles to ensure double-buffering (no white flashes).
         // This keeps the stale content visible until the new content is ready (async generation).
@@ -1109,13 +1045,16 @@ class TileManager(
      * the new, correct version is generated, preventing white flashes during canvas edits.
      */
     fun refreshTiles(bounds: RectF) {
-        // Atomically increment version inside the lock to prevent races with committing jobs.
         val version: Int
         val snapshot: Map<TileCache.TileKey, TileCache.CachedTile>
         val currentGenerating: MutableSet<TileCache.TileKey>
 
         synchronized(pendingLock) {
-            version = renderVersion.incrementAndGet()
+            // We MUST NOT increment renderVersion here.
+            // Incrementing it would invalidate ALL currently running background jobs
+            // across the entire canvas, causing them to discard their results.
+            // Local tile regeneration is handled by explicitly canceling the specific jobs in queueTileGeneration.
+            version = renderVersion.get()
             snapshot = tileCache.snapshot()
             currentGenerating = synchronized(generatingKeys) { HashSet(generatingKeys) }
         }

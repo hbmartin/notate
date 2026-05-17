@@ -103,16 +103,24 @@ class CanvasControllerImpl(
         }
     }
 
+    private val eraserMutex = Mutex()
+
     override suspend fun previewEraser(
         stroke: Stroke,
         type: EraserType,
     ) {
-        val invalidated = model.erase(stroke, type)
-        withContext(Dispatchers.Main) {
-            if (type == EraserType.STANDARD) {
-                renderer.updateTilesWithErasure(stroke)
-            } else if (invalidated != null) {
-                renderer.refreshTiles(invalidated)
+        if (type == EraserType.STANDARD) {
+            // Non-destructive real-time preview via overlay.
+            // This is artifact-free and flicker-free.
+            withContext(Dispatchers.Main) {
+                renderer.setEraserPreview(stroke)
+            }
+        } else {
+            val invalidated = withContext(Dispatchers.Default) { model.erase(stroke, type) }
+            if (invalidated != null) {
+                withContext(Dispatchers.Main) {
+                    renderer.refreshTiles(invalidated)
+                }
             }
         }
     }
@@ -121,12 +129,20 @@ class CanvasControllerImpl(
         stroke: Stroke,
         type: EraserType,
     ) {
-        val invalidated = model.erase(stroke, type)
+        // Clear preview overlay immediately to avoid "double-erasure" visual weight
         withContext(Dispatchers.Main) {
-            if (type == EraserType.STANDARD) {
-                renderer.updateTilesWithErasure(stroke)
-            } else if (invalidated != null) {
+            renderer.setEraserPreview(null)
+        }
+
+        val invalidated = withContext(Dispatchers.Default) { model.erase(stroke, type) }
+        
+        withContext(Dispatchers.Main) {
+            if (invalidated != null) {
+                // Redraw vectors to show proper cut caps
                 renderer.refreshTiles(invalidated)
+            } else if (type == EraserType.STANDARD) {
+                // User erased empty space. Refresh bounds to ensure consistency.
+                renderer.refreshTiles(stroke.bounds)
             }
             onContentChangedListener?.invoke()
         }
@@ -797,7 +813,7 @@ class CanvasControllerImpl(
             renderer.setHiddenItems(ids)
             // Instant hide optimization for small selections
             if (ids.size < 500) {
-                val items = withContext(Dispatchers.Default) { fetchSelectedItems() }
+                val items: List<CanvasItem> = withContext(Dispatchers.Default) { fetchSelectedItems() }
                 renderer.hideItemsInCache(items)
             }
             renderer.invalidateTiles(bounds)
