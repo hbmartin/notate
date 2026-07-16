@@ -1,5 +1,29 @@
 #include "preprocess.h"
 #include <android/bitmap.h>
+#include <cstring>
+
+namespace {
+class BitmapPixelsLock {
+public:
+  BitmapPixelsLock(JNIEnv *env, jobject bitmap) : env_(env), bitmap_(bitmap) {}
+  ~BitmapPixelsLock() {
+    if (locked_)
+      AndroidBitmap_unlockPixels(env_, bitmap_);
+  }
+
+  bool lock(unsigned char **pixels) {
+    const int result = AndroidBitmap_lockPixels(
+        env_, bitmap_, reinterpret_cast<void **>(pixels));
+    locked_ = result == ANDROID_BITMAP_RESULT_SUCCESS && *pixels != nullptr;
+    return locked_;
+  }
+
+private:
+  JNIEnv *env_;
+  jobject bitmap_;
+  bool locked_ = false;
+};
+} // namespace
 
 cv::Mat bitmap_to_cv_mat(JNIEnv *env, jobject bitmap) {
   AndroidBitmapInfo info;
@@ -12,12 +36,25 @@ cv::Mat bitmap_to_cv_mat(JNIEnv *env, jobject bitmap) {
     LOGE("Bitmap format is not RGBA_8888 !");
     return cv::Mat{};
   }
+  if (info.width == 0 || info.height == 0 || info.stride < info.width * 4u) {
+    LOGE("Invalid bitmap dimensions or stride");
+    return cv::Mat{};
+  }
   unsigned char *srcData = NULL;
-  AndroidBitmap_lockPixels(env, bitmap, (void **)&srcData);
+  BitmapPixelsLock lock(env, bitmap);
+  if (!lock.lock(&srcData)) {
+    LOGE("AndroidBitmap_lockPixels failed");
+    return cv::Mat{};
+  }
   cv::Mat mat = cv::Mat::zeros(info.height, info.width, CV_8UC4);
-  memcpy(mat.data, srcData, info.height * info.width * 4);
-  AndroidBitmap_unlockPixels(env, bitmap);
-  cv::cvtColor(mat, mat, cv::COLOR_RGBA2BGR);
+  if (mat.empty())
+    return cv::Mat{};
+  const size_t rowBytes = static_cast<size_t>(info.width) * 4u;
+  for (uint32_t row = 0; row < info.height; ++row) {
+    std::memcpy(mat.ptr(row), srcData + static_cast<size_t>(row) * info.stride,
+                rowBytes);
+  }
+  cv::cvtColor(mat, mat, cv::COLOR_RGBA2RGB);
   /**
   if (!cv::imwrite("/sdcard/1/copy.jpg", mat)){
       LOGE("Write image failed " );

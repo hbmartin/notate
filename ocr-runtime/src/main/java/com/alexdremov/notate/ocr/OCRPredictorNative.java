@@ -10,15 +10,17 @@ final class OCRPredictorNative {
 
     private static final AtomicBoolean isSOLoaded = new AtomicBoolean();
 
-    public static void loadLibrary() throws RuntimeException {
-        if (!isSOLoaded.get() && isSOLoaded.compareAndSet(false, true)) {
-            try {
-                System.loadLibrary("notate_ppocrv3");
-            } catch (Throwable e) {
-                RuntimeException exception = new RuntimeException(
-                        "Load libnotate_ppocrv3.so failed, please check it exists in the APK.", e);
-                throw exception;
-            }
+    public static synchronized void loadLibrary() throws RuntimeException {
+        if (isSOLoaded.get()) {
+            return;
+        }
+        try {
+            System.loadLibrary("notate_ppocrv3");
+            isSOLoaded.set(true);
+        } catch (Throwable e) {
+            RuntimeException exception = new RuntimeException(
+                    "Load libnotate_ppocrv3.so failed, please check it exists in the APK.", e);
+            throw exception;
         }
     }
 
@@ -31,6 +33,9 @@ final class OCRPredictorNative {
         loadLibrary();
         nativePointer = init(config.detModelFilename, config.recModelFilename, config.clsModelFilename, config.useOpencl,
                 config.cpuThreadNum, config.cpuPower);
+        if (nativePointer == 0) {
+            throw new IllegalStateException("Failed to initialize the PP-OCRv3 native predictor");
+        }
         Log.i("OCRPredictorNative", "load success " + nativePointer);
 
     }

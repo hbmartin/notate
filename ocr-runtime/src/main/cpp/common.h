@@ -3,8 +3,10 @@
 //
 
 #pragma once
-#import <numeric>
-#import <vector>
+#include <limits>
+#include <numeric>
+#include <stdexcept>
+#include <vector>
 
 #ifdef __ANDROID__
 
@@ -33,5 +35,13 @@ template <typename T> inline T product(const std::vector<T> &vec) {
   if (vec.empty()) {
     return 0;
   }
-  return std::accumulate(vec.begin(), vec.end(), 1, std::multiplies<T>());
+  T result{1};
+  for (const T factor : vec) {
+    if (factor < 0 ||
+        (factor != 0 && result > std::numeric_limits<T>::max() / factor)) {
+      throw std::overflow_error("Tensor shape product overflow");
+    }
+    result *= factor;
+  }
+  return result;
 }

@@ -16,11 +16,16 @@
 #include "opencv2/core.hpp"
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
+#include <algorithm>
+#include <array>
 #include <iostream>
 #include <math.h>
 #include <vector>
 
-static void getcontourarea(float **box, float unclip_ratio, float &distance) {
+using BoxArray = std::array<std::array<float, 2>, 4>;
+
+static void getcontourarea(const BoxArray &box, float unclip_ratio,
+                           float &distance) {
   int pts_num = 4;
   float area = 0.0f;
   float dist = 0.0f;
@@ -37,7 +42,7 @@ static void getcontourarea(float **box, float unclip_ratio, float &distance) {
   distance = area * unclip_ratio / dist;
 }
 
-static cv::RotatedRect unclip(float **box) {
+static cv::RotatedRect unclip(const BoxArray &box) {
   float unclip_ratio = 2.0;
   float distance = 1.0;
 
@@ -65,43 +70,14 @@ static cv::RotatedRect unclip(float **box) {
   return res;
 }
 
-static float **Mat2Vec(cv::Mat mat) {
-  auto **array = new float *[mat.rows];
-  for (int i = 0; i < mat.rows; ++i) {
-    array[i] = new float[mat.cols];
-  }
-  for (int i = 0; i < mat.rows; ++i) {
-    for (int j = 0; j < mat.cols; ++j) {
+static BoxArray Mat2Vec(const cv::Mat &mat) {
+  BoxArray array{};
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 2; ++j) {
       array[i][j] = mat.at<float>(i, j);
     }
   }
-
   return array;
-}
-
-static void quickSort(float **s, int l, int r) {
-  if (l < r) {
-    int i = l, j = r;
-    float x = s[l][0];
-    float *xp = s[l];
-    while (i < j) {
-      while (i < j && s[j][0] >= x) {
-        j--;
-      }
-      if (i < j) {
-        std::swap(s[i++], s[j]);
-      }
-      while (i < j && s[i][0] < x) {
-        i++;
-      }
-      if (i < j) {
-        std::swap(s[j--], s[i]);
-      }
-    }
-    s[i] = xp;
-    quickSort(s, l, i - 1);
-    quickSort(s, i + 1, r);
-  }
 }
 
 static void quickSort_vector(std::vector<std::vector<int>> &box, int l, int r,
@@ -150,16 +126,18 @@ order_points_clockwise(std::vector<std::vector<int>> pts) {
   return rect;
 }
 
-static float **get_mini_boxes(cv::RotatedRect box, float &ssid) {
+static BoxArray get_mini_boxes(cv::RotatedRect box, float &ssid) {
   ssid = box.size.width >= box.size.height ? box.size.height : box.size.width;
 
   cv::Mat points;
   cv::boxPoints(box, points);
   // sorted box points
   auto array = Mat2Vec(points);
-  quickSort(array, 0, 3);
+  std::sort(
+      array.begin(), array.end(),
+      [](const auto &left, const auto &right) { return left[0] < right[0]; });
 
-  float *idx1 = array[0], *idx2 = array[1], *idx3 = array[2], *idx4 = array[3];
+  auto idx1 = array[0], idx2 = array[1], idx3 = array[2], idx4 = array[3];
   if (array[3][1] <= array[2][1]) {
     idx2 = array[3];
     idx3 = array[2];
@@ -201,8 +179,7 @@ static float clampf(float x, float min, float max) {
   return x;
 }
 
-float box_score_fast(float **box_array, cv::Mat pred) {
-  auto array = box_array;
+float box_score_fast(const BoxArray &array, cv::Mat pred) {
   int width = pred.cols;
   int height = pred.rows;
 

@@ -47,6 +47,11 @@ class CanvasRepository(
         val isConflict: Boolean = false,
     )
 
+    private data class OcrIndexSnapshot(
+        val directory: File,
+        val lastModified: Long,
+    )
+
     private val sessionsDir: File by lazy {
         File(context.cacheDir, "sessions").apply { mkdirs() }
     }
@@ -58,6 +63,7 @@ class CanvasRepository(
         // Cache active sessions to handle quick close/re-open and share state within the SAME process.
         private val activeSessions = java.util.concurrent.ConcurrentHashMap<String, CanvasSession>()
         private val sessionLock = Mutex()
+        private val OCR_REGION_FILE = Regex("r_-?\\d+_-?\\d+\\.bin")
     }
 
     class CanvasLockedException(
@@ -89,6 +95,13 @@ class CanvasRepository(
                 val sessionName = hashPath(path)
                 Logger.d("CanvasRepository", "Opening session for: $path (Hash: $sessionName)")
 
+                try {
+                    atomicStorage.recoverInterruptedCommit(path)
+                } catch (error: Exception) {
+                    Logger.e("CanvasRepository", "Unable to recover an interrupted save for $path", error, showToUser = true)
+                    return@withContext null
+                }
+
                 // 1. Get Initial Origin Info for Cache Check
                 val (initialOriginTime, initialOriginSize) = StorageUtils.getOriginInfo(context, path)
 
@@ -106,12 +119,12 @@ class CanvasRepository(
                         Logger.i("CanvasRepository", "Attaching to active in-memory session. Clients: $newCount")
                         return@withContext existingSession
                     } else {
+                        val newCount = existingSession.retain()
                         Logger.w(
                             "CanvasRepository",
-                            "Active in-memory session is stale (Origin mismatch: ${existingSession.originLastModified} vs $initialOriginTime). Closing and reloading.",
+                            "Origin changed while an active session still has clients. Preserving the in-memory session ($newCount clients); save conflict handling will protect both versions.",
                         )
-                        activeSessions.remove(sessionName)
-                        existingSession.close()
+                        return@withContext existingSession
                     }
                 }
 
@@ -530,46 +543,87 @@ class CanvasRepository(
         session: CanvasSession,
     ): Unit =
         withContext(Dispatchers.IO) {
-            sessionLock.withLock {
-                val lastClient = session.release()
-                if (lastClient) {
-                    val name = session.sessionDir.name
-                    activeSessions.remove(name) // Remove from active cache immediately so new opens fail fast (Lock held)
+            val lastClient =
+                sessionLock.withLock {
+                    val lastClient = session.release()
+                    if (lastClient) {
+                        val name = session.sessionDir.name
+                        activeSessions.remove(name) // Remove from active cache immediately so new opens fail fast (Lock held)
+                        Logger.i("CanvasRepository", "Detached final client for: $name")
+                    } else if (!session.acquireForOperation()) {
+                        throw IllegalStateException("Cannot save: shared session is already closed")
+                    }
+                    lastClient
+                }
 
-                    Logger.i("CanvasRepository", "Launching background WorkManager save and close for: $name")
+            if (lastClient) {
+                val name = session.sessionDir.name
 
-                    try {
-                        // 1. Flush to disk (fast, incremental)
-                        saveCanvasSession(path, session, commitToZip = false)
+                Logger.i("CanvasRepository", "Launching background WorkManager save and close for: $name")
 
-                        // 2. Schedule Background Zipping via WorkManager
-                        val workData =
-                            Data
-                                .Builder()
-                                .putString(SaveWorker.KEY_SESSION_PATH, session.sessionDir.absolutePath)
-                                .putString(SaveWorker.KEY_TARGET_PATH, path)
+                try {
+                    // 1. Flush to disk (fast, incremental)
+                    saveCanvasSession(path, session, commitToZip = false)
+
+                    // 2. Schedule Background Zipping via WorkManager
+                    val workData =
+                        Data
+                            .Builder()
+                            .putString(SaveWorker.KEY_SESSION_PATH, session.sessionDir.absolutePath)
+                            .putString(SaveWorker.KEY_TARGET_PATH, path)
+                            .build()
+
+                    val workRequest =
+                        OneTimeWorkRequest
+                            .Builder(SaveWorker::class.java)
+                            .setInputData(workData)
+                            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                            .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
+                            .build()
+
+                    val manager = WorkManager.getInstance(context)
+                    val continuation =
+                        manager.beginUniqueWork(
+                            "SaveWorker_$name",
+                            ExistingWorkPolicy.REPLACE,
+                            workRequest,
+                        )
+                    if (PreferencesManager.isBackgroundOcrIndexingEnabled(context)) {
+                        val indexData =
+                            Data.Builder()
+                                .putString(OcrIndexWorker.KEY_SESSION_PATH, session.sessionDir.absolutePath)
+                                .putString(OcrIndexWorker.KEY_TARGET_PATH, path)
                                 .build()
-
-                        val workRequest =
-                            OneTimeWorkRequest
-                                .Builder(SaveWorker::class.java)
-                                .setInputData(workData)
-                                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                        val indexRequest =
+                            OneTimeWorkRequest.Builder(OcrIndexWorker::class.java)
+                                .setInputData(indexData)
+                                .addTag(OcrIndexWorker.TAG)
                                 .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
                                 .build()
-
-                        val manager = WorkManager.getInstance(context)
-                        val continuation =
-                            manager.beginUniqueWork(
-                                "SaveWorker_$name",
-                                ExistingWorkPolicy.REPLACE,
-                                workRequest,
-                            )
-                        if (PreferencesManager.isBackgroundOcrIndexingEnabled(context)) {
+                        continuation.then(indexRequest).enqueue()
+                    } else {
+                        continuation.enqueue()
+                    }
+                } catch (e: Exception) {
+                    Logger.e("CanvasRepository", "Failed to prepare background save for $path", e)
+                } finally {
+                    // 3. Close Session (Release memory and FileLock)
+                    // The Worker will re-acquire a lock if possible/needed, or write regardless.
+                    session.close()
+                    Logger.i("CanvasRepository", "Session flushed and closed, worker enqueued: $name")
+                }
+            } else {
+                Logger.i("CanvasRepository", "saveAndCloseSession: Session retained by other clients, performing standard save.")
+                try {
+                    val saveResult = saveCanvasSessionWithReservation(path, session, commitToZip = true)
+                    if (PreferencesManager.isBackgroundOcrIndexingEnabled(context)) {
+                        createOcrIndexSnapshot(session, saveResult.savedPath)?.let { snapshot ->
                             val indexData =
                                 Data.Builder()
-                                    .putString(OcrIndexWorker.KEY_SESSION_PATH, session.sessionDir.absolutePath)
-                                    .putString(OcrIndexWorker.KEY_TARGET_PATH, path)
+                                    .putString(OcrIndexWorker.KEY_SESSION_PATH, snapshot.directory.absolutePath)
+                                    .putString(OcrIndexWorker.KEY_TARGET_PATH, saveResult.savedPath)
+                                    .putLong(OcrIndexWorker.KEY_LAST_MODIFIED, snapshot.lastModified)
+                                    .putBoolean(OcrIndexWorker.KEY_CLEANUP_SESSION, true)
                                     .build()
                             val indexRequest =
                                 OneTimeWorkRequest.Builder(OcrIndexWorker::class.java)
@@ -577,23 +631,38 @@ class CanvasRepository(
                                     .addTag(OcrIndexWorker.TAG)
                                     .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
                                     .build()
-                            continuation.then(indexRequest).enqueue()
-                        } else {
-                            continuation.enqueue()
+                            WorkManager.getInstance(context)
+                                .beginUniqueWork(
+                                    "OcrIndexSnapshot_${session.sessionDir.name}",
+                                    ExistingWorkPolicy.REPLACE,
+                                    indexRequest,
+                                ).enqueue()
                         }
-                    } catch (e: Exception) {
-                        Logger.e("CanvasRepository", "Failed to prepare background save for $path", e)
-                    } finally {
-                        // 3. Close Session (Release memory and FileLock)
-                        // The Worker will re-acquire a lock if possible/needed, or write regardless.
-                        session.close()
-                        Logger.i("CanvasRepository", "Session flushed and closed, worker enqueued: $name")
                     }
-                } else {
-                    Logger.i("CanvasRepository", "saveAndCloseSession: Session retained by other clients, performing standard save.")
-                    saveCanvasSession(path, session, commitToZip = true)
-                    Unit
+                } finally {
+                    session.releaseOperation()
                 }
+            }
+        }
+
+    private suspend fun createOcrIndexSnapshot(
+        session: CanvasSession,
+        targetPath: String,
+    ): OcrIndexSnapshot? =
+        session.saveMutex.withLock {
+            val snapshot = File(context.cacheDir, "ocr_snapshots/${session.sessionDir.name}_${java.util.UUID.randomUUID()}")
+            try {
+                snapshot.mkdirs()
+                session.sessionDir.listFiles()
+                    .orEmpty()
+                    .filter { it.isFile && (it.name == "manifest.bin" || OCR_REGION_FILE.matches(it.name)) }
+                    .forEach { source -> source.copyTo(File(snapshot, source.name), overwrite = true) }
+                check(File(snapshot, "manifest.bin").isFile) { "OCR snapshot is missing manifest.bin" }
+                OcrIndexSnapshot(snapshot, StorageUtils.getOriginInfo(context, targetPath).first)
+            } catch (error: Exception) {
+                snapshot.deleteRecursively()
+                Logger.e("CanvasRepository", "Unable to create OCR snapshot", error)
+                null
             }
         }
 
@@ -602,9 +671,23 @@ class CanvasRepository(
         path: String,
         session: CanvasSession,
         commitToZip: Boolean = true,
+    ): SaveResult = saveCanvasSessionInternal(path, session, commitToZip, acquireOperation = true)
+
+    private suspend fun saveCanvasSessionWithReservation(
+        path: String,
+        session: CanvasSession,
+        commitToZip: Boolean,
+    ): SaveResult = saveCanvasSessionInternal(path, session, commitToZip, acquireOperation = false)
+
+    @OptIn(ExperimentalSerializationApi::class)
+    private suspend fun saveCanvasSessionInternal(
+        path: String,
+        session: CanvasSession,
+        commitToZip: Boolean,
+        acquireOperation: Boolean,
     ): SaveResult =
         withContext(Dispatchers.IO) {
-            if (!session.acquireForOperation()) {
+            if (acquireOperation && !session.acquireForOperation()) {
                 throw IllegalStateException("Cannot save: session is closed")
             }
 
@@ -712,7 +795,7 @@ class CanvasRepository(
                 Logger.e("CanvasRepository", "Failed to save session", e, showToUser = true)
                 throw e
             } finally {
-                session.releaseOperation()
+                if (acquireOperation) session.releaseOperation()
             }
         }
 

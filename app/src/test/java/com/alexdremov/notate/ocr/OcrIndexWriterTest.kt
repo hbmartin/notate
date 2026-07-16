@@ -15,6 +15,7 @@ import com.alexdremov.notate.ocr.index.OcrDocumentEntity
 import com.alexdremov.notate.ocr.index.OcrIndexDatabase
 import com.alexdremov.notate.ocr.index.OcrIndexWriter
 import com.alexdremov.notate.ocr.index.OcrSearchNormalizer
+import com.alexdremov.notate.ocr.index.OcrSearchRepository
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.protobuf.ProtoBuf
@@ -118,6 +119,107 @@ class OcrIndexWriterTest {
         assertThat(dao.getBlocksForRegion(documentId, "r_0_0").map { it.text }).containsExactly("previous text")
         assertThat(dao.getDocument(documentId)?.status).isEqualTo("STALE")
         session.deleteRecursively()
+    }
+
+    @Test
+    fun emptyRegionsPersistTheirHashAndAreSkippedOnTheNextPass() = runTest {
+        val dao = database.dao()
+        val documentId = "doc-empty"
+        val session = File(context.cacheDir, "ocr-empty-test").apply { deleteRecursively(); mkdirs() }
+        File(session, "manifest.bin").writeBytes(
+            ProtoBuf.encodeToByteArray(CanvasData.serializer(), CanvasData(uuid = documentId)),
+        )
+        File(session, "r_0_0.bin").writeBytes(
+            ProtoBuf.encodeToByteArray(RegionProto.serializer(), RegionProto(0, 0)),
+        )
+        val writer = OcrIndexWriter(context, UnavailableEngine, dao)
+
+        val first = writer.indexSession(session, "/empty.notate", 1)
+        val storedHash = dao.getRegionHash(documentId, "r_0_0")
+        val second = writer.indexSession(session, "/empty.notate", 1)
+
+        assertThat(first.indexedRegions).isEqualTo(1)
+        assertThat(storedHash).isNotNull()
+        assertThat(dao.getBlocksForRegion(documentId, "r_0_0")).isEmpty()
+        assertThat(second.unchangedRegions).isEqualTo(1)
+        assertThat(second.indexedRegions).isEqualTo(0)
+        session.deleteRecursively()
+    }
+
+    @Test
+    fun mixedAndSpacedCjkQueryMatchesIndependentSegments() = runTest {
+        val dao = database.dao()
+        dao.upsertDocument(OcrDocumentEntity("mixed", "project", "/mixed.notate", "Mixed", 1, "v", "INDEXED"))
+        val text = "中文 note"
+        dao.insertBlocks(
+            listOf(
+                OcrBlockEntity(
+                    stableId = "mixed-block",
+                    documentId = "mixed",
+                    regionId = "r_0_0",
+                    regionHash = "hash",
+                    source = OcrTextSource.INK_OCR.name,
+                    text = text,
+                    normalizedText = OcrSearchNormalizer.normalize(text),
+                    searchTokens = OcrSearchNormalizer.searchableTokens(text),
+                    confidence = 0.9f,
+                    left = 0f,
+                    top = 0f,
+                    right = 10f,
+                    bottom = 10f,
+                ),
+            ),
+        )
+
+        assertThat(dao.search(OcrSearchNormalizer.ftsQuery("note 中 文"), 10)).isNotEmpty()
+        assertThat(OcrSearchRepository(dao).search("note 中 文").map { it.documentId }).containsExactly("mixed")
+    }
+
+    @Test
+    fun documentRekeyAtTheSamePathRemovesOldBlocksAndFtsRows() = runTest {
+        val dao = database.dao()
+        dao.upsertDocument(OcrDocumentEntity("old-id", null, "/same.notate", "Same", 1, "v", "INDEXED"))
+        dao.replaceRegion(
+            "old-id",
+            "r_0_0",
+            "hash",
+            listOf(
+                OcrBlockEntity(
+                    stableId = "old-block",
+                    documentId = "old-id",
+                    regionId = "r_0_0",
+                    regionHash = "hash",
+                    source = OcrTextSource.INK_OCR.name,
+                    text = "orphan candidate",
+                    normalizedText = "orphan candidate",
+                    searchTokens = "orphan candidate",
+                    confidence = 1f,
+                    left = null,
+                    top = null,
+                    right = null,
+                    bottom = null,
+                ),
+            ),
+        )
+
+        dao.upsertDocumentSafely(OcrDocumentEntity("new-id", null, "/same.notate", "Same", 2, "v", "INDEXED"))
+
+        assertThat(dao.getDocument("old-id")).isNull()
+        assertThat(dao.getBlocksForRegion("old-id", "r_0_0")).isEmpty()
+        assertThat(dao.getFtsRows()).isEmpty()
+        assertThat(dao.getDocument("new-id")).isNotNull()
+    }
+
+    @Test
+    fun interruptedAndRepeatedlyFailingDocumentsReachATerminalState() = runTest {
+        val dao = database.dao()
+        dao.upsertDocument(OcrDocumentEntity("poison", null, "/poison.notate", "Poison", 1, "v", "INDEXING"))
+
+        dao.repairInterruptedDocuments()
+        repeat(3) { dao.recordIndexFailure("poison", "bad region", 3) }
+
+        assertThat(dao.getDocument("poison")?.status).isEqualTo("FAILED")
+        assertThat(dao.getDocument("poison")?.failureCount).isEqualTo(3)
     }
 
     private object UnavailableEngine : PaddleOcrEngine {

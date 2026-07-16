@@ -14,7 +14,11 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.protobuf.ProtoBuf
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 class RegionStorage(
@@ -396,39 +400,25 @@ class RegionStorage(
 
         val tmpFile = File(parent, "${file.name}.tmp")
         try {
-            tmpFile.writeBytes(bytes)
+            FileOutputStream(tmpFile).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
 
             // Verify temp file was written correctly
             if (!tmpFile.exists() || tmpFile.length() != bytes.size.toLong()) {
                 throw IOException("Temp file verification failed: expected ${bytes.size} bytes, got ${tmpFile.length()}")
             }
 
-            if (file.exists()) {
-                if (!file.delete()) {
-                    // Delete failed - try overwriting instead
-                    Logger.w(TAG, "Atomic write: Failed to delete existing target $file, attempting overwrite")
-                    file.writeBytes(bytes)
-                    // Verify the overwrite
-                    if (file.length() != bytes.size.toLong()) {
-                        throw IOException("Overwrite verification failed")
-                    }
-                    tmpFile.delete()
-                    return
-                }
-            }
-            if (!tmpFile.renameTo(file)) {
-                // Rename failed - try copy instead
-                Logger.w(TAG, "Atomic write: Failed to rename temp file to $file, attempting copy")
-                tmpFile.inputStream().use { input ->
-                    file.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                // Verify the copy
-                if (file.length() != bytes.size.toLong()) {
-                    throw IOException("Copy verification failed")
-                }
-                tmpFile.delete()
+            try {
+                Files.move(
+                    tmpFile.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmpFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
         } catch (e: Exception) {
             Logger.e(TAG, "Atomic write failed for $file", e)

@@ -25,6 +25,18 @@ data class OcrDocumentEntity(
     val status: String,
     val errorMessage: String? = null,
     val indexedAt: Long = 0L,
+    val failureCount: Int = 0,
+)
+
+@Entity(
+    tableName = "ocr_region_states",
+    primaryKeys = ["documentId", "regionId"],
+    indices = [Index("documentId"), Index("regionHash")],
+)
+data class OcrRegionStateEntity(
+    val documentId: String,
+    val regionId: String,
+    val regionHash: String,
 )
 
 @Entity(
@@ -61,9 +73,9 @@ data class OcrBlockFts(
 )
 
 @Database(
-    entities = [OcrDocumentEntity::class, OcrBlockEntity::class, OcrBlockFts::class],
-    version = 1,
-    exportSchema = false,
+    entities = [OcrDocumentEntity::class, OcrRegionStateEntity::class, OcrBlockEntity::class, OcrBlockFts::class],
+    version = 2,
+    exportSchema = true,
 )
 abstract class OcrIndexDatabase : RoomDatabase() {
     abstract fun dao(): OcrIndexDao
@@ -75,6 +87,7 @@ abstract class OcrIndexDatabase : RoomDatabase() {
             instance ?: synchronized(this) {
                 instance ?: Room
                     .databaseBuilder(context.applicationContext, OcrIndexDatabase::class.java, "notate_ocr_index.db")
+                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { instance = it }
             }

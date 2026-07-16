@@ -29,6 +29,15 @@ interface OcrIndexDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertDocument(document: OcrDocumentEntity)
 
+    @Transaction
+    suspend fun upsertDocumentSafely(document: OcrDocumentEntity) {
+        getDocumentByPath(document.path)?.takeIf { it.documentId != document.documentId }?.let { conflicting ->
+            deleteDocumentBlocks(conflicting.documentId)
+            deleteDocument(conflicting.documentId)
+        }
+        upsertDocument(document)
+    }
+
     @Query("SELECT * FROM ocr_documents WHERE documentId = :documentId")
     suspend fun getDocument(documentId: String): OcrDocumentEntity?
 
@@ -38,14 +47,17 @@ interface OcrIndexDao {
     @Query("SELECT * FROM ocr_documents")
     suspend fun getAllDocuments(): List<OcrDocumentEntity>
 
-    @Query("SELECT regionHash FROM ocr_blocks WHERE documentId = :documentId AND regionId = :regionId LIMIT 1")
+    @Query("SELECT regionHash FROM ocr_region_states WHERE documentId = :documentId AND regionId = :regionId LIMIT 1")
     suspend fun getRegionHash(
         documentId: String,
         regionId: String,
     ): String?
 
-    @Query("SELECT DISTINCT regionId FROM ocr_blocks WHERE documentId = :documentId")
-    suspend fun getRegionIds(documentId: String): List<String>
+    @Query("SELECT regionId FROM ocr_region_states WHERE documentId = :documentId")
+    suspend fun getRegionStateIds(documentId: String): List<String>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertRegionState(state: OcrRegionStateEntity)
 
     @Query("SELECT * FROM ocr_blocks WHERE documentId = :documentId AND regionId = :regionId")
     suspend fun getBlocksForRegion(
@@ -79,6 +91,12 @@ interface OcrIndexDao {
         regionId: String,
     )
 
+    @Query("DELETE FROM ocr_region_states WHERE documentId = :documentId AND regionId = :regionId")
+    suspend fun deleteRegionState(
+        documentId: String,
+        regionId: String,
+    )
+
     @Transaction
     suspend fun deleteRegion(
         documentId: String,
@@ -86,6 +104,7 @@ interface OcrIndexDao {
     ) {
         deleteRegionFts(documentId, regionId)
         deleteRegionRows(documentId, regionId)
+        deleteRegionState(documentId, regionId)
     }
 
     @Transaction
@@ -103,10 +122,12 @@ interface OcrIndexDao {
     suspend fun replaceRegion(
         documentId: String,
         regionId: String,
+        regionHash: String,
         blocks: List<OcrBlockEntity>,
     ) {
         deleteRegion(documentId, regionId)
         if (blocks.isNotEmpty()) insertBlocks(blocks)
+        upsertRegionState(OcrRegionStateEntity(documentId, regionId, regionHash))
     }
 
     @Query("DELETE FROM ocr_blocks_fts WHERE rowid IN (SELECT rowid FROM ocr_blocks WHERE documentId = :documentId)")
@@ -115,10 +136,14 @@ interface OcrIndexDao {
     @Query("DELETE FROM ocr_blocks WHERE documentId = :documentId")
     suspend fun deleteDocumentBlockRows(documentId: String)
 
+    @Query("DELETE FROM ocr_region_states WHERE documentId = :documentId")
+    suspend fun deleteDocumentRegionStates(documentId: String)
+
     @Transaction
     suspend fun deleteDocumentBlocks(documentId: String) {
         deleteDocumentFts(documentId)
         deleteDocumentBlockRows(documentId)
+        deleteDocumentRegionStates(documentId)
     }
 
     @Query("DELETE FROM ocr_documents WHERE documentId = :documentId")
@@ -130,10 +155,14 @@ interface OcrIndexDao {
     @Query("DELETE FROM ocr_blocks")
     suspend fun clearBlockRows()
 
+    @Query("DELETE FROM ocr_region_states")
+    suspend fun clearRegionStates()
+
     @Transaction
     suspend fun clearBlocks() {
         clearFts()
         clearBlockRows()
+        clearRegionStates()
     }
 
     @Query("DELETE FROM ocr_documents")
@@ -145,6 +174,40 @@ interface OcrIndexDao {
         clearDocuments()
     }
 
+    @Query("DELETE FROM ocr_blocks_fts WHERE rowid NOT IN (SELECT rowid FROM ocr_blocks) OR rowid IN (SELECT b.rowid FROM ocr_blocks b LEFT JOIN ocr_documents d ON d.documentId = b.documentId WHERE d.documentId IS NULL)")
+    suspend fun deleteOrphanedFtsRows()
+
+    @Query("DELETE FROM ocr_blocks WHERE documentId NOT IN (SELECT documentId FROM ocr_documents)")
+    suspend fun deleteOrphanedBlockRows()
+
+    @Query("DELETE FROM ocr_region_states WHERE documentId NOT IN (SELECT documentId FROM ocr_documents)")
+    suspend fun deleteOrphanedRegionStates()
+
+    @Transaction
+    suspend fun deleteOrphans() {
+        deleteOrphanedFtsRows()
+        deleteOrphanedBlockRows()
+        deleteOrphanedRegionStates()
+    }
+
+    @Query("UPDATE ocr_documents SET status = 'STALE', errorMessage = 'Interrupted while indexing' WHERE status = 'INDEXING'")
+    suspend fun repairInterruptedDocuments()
+
+    @Query(
+        """
+        UPDATE ocr_documents
+        SET failureCount = failureCount + 1,
+            status = CASE WHEN failureCount + 1 >= :maxFailures THEN 'FAILED' ELSE 'STALE' END,
+            errorMessage = :message
+        WHERE documentId = :documentId
+        """,
+    )
+    suspend fun recordIndexFailure(
+        documentId: String,
+        message: String,
+        maxFailures: Int,
+    )
+
     @Query(
         """
         SELECT b.rowId, b.documentId, d.projectId, d.path, d.name AS documentName,
@@ -153,7 +216,7 @@ interface OcrIndexDao {
         FROM ocr_blocks AS b
         JOIN ocr_blocks_fts ON b.rowId = ocr_blocks_fts.rowid
         JOIN ocr_documents AS d ON d.documentId = b.documentId
-        WHERE ocr_blocks_fts MATCH :ftsQuery
+        WHERE d.status IN ('INDEXED', 'STALE') AND ocr_blocks_fts MATCH :ftsQuery
         ORDER BY CASE b.source WHEN 'FILENAME' THEN 0 WHEN 'TYPED_TEXT' THEN 1 ELSE 2 END,
                  b.confidence DESC, d.lastModified DESC
         LIMIT :limit

@@ -9,6 +9,7 @@
 #include "ocr_db_post_process.h"
 #include "preprocess.h"
 #include <array>
+#include <cmath>
 
 namespace ppredictor {
 
@@ -43,8 +44,9 @@ int OCR_PPredictor::init_from_file(const std::string &det_model_path,
   _rec_predictor->init_from_file(rec_model_path);
 
   if (!cls_model_path.empty()) {
-    _cls_predictor = std::unique_ptr<PPredictor>(new PPredictor{
-        _config.use_opencl, _config.thread_num, NET_OCR_INTERNAL, _config.mode});
+    _cls_predictor = std::unique_ptr<PPredictor>(
+        new PPredictor{_config.use_opencl, _config.thread_num, NET_OCR_INTERNAL,
+                       _config.mode});
     _cls_predictor->init_from_file(cls_model_path);
   }
   return RETURN_OK;
@@ -123,21 +125,10 @@ cv::Mat DetResizeImg(const cv::Mat img, int max_size_len,
     }
   }
 
-  int resize_h = static_cast<int>(float(h) * ratio);
-  int resize_w = static_cast<int>(float(w) * ratio);
-  if (resize_h % 32 == 0)
-    resize_h = resize_h;
-  else if (resize_h / 32 < 1 + 1e-5)
-    resize_h = 32;
-  else
-    resize_h = (resize_h / 32 - 1) * 32;
-
-  if (resize_w % 32 == 0)
-    resize_w = resize_w;
-  else if (resize_w / 32 < 1 + 1e-5)
-    resize_w = 32;
-  else
-    resize_w = (resize_w / 32 - 1) * 32;
+  int resize_h =
+      std::max(32, static_cast<int>(std::round(float(h) * ratio / 32.0f)) * 32);
+  int resize_w =
+      std::max(32, static_cast<int>(std::round(float(w) * ratio / 32.0f)) * 32);
 
   cv::Mat resize_img;
   cv::resize(img, resize_img, cv::Size(resize_w, resize_h));
@@ -308,11 +299,11 @@ OCR_PPredictor::calc_filtered_boxes(const float *pred, int pred_size,
 
   cv::Mat pred_map = cv::Mat::zeros(output_height, output_width, CV_32F);
   memcpy(pred_map.data, pred, pred_size * sizeof(float));
-  cv::Mat cbuf_map;
-  pred_map.convertTo(cbuf_map, CV_8UC1);
-
+  cv::Mat bit_map_float;
+  cv::threshold(pred_map, bit_map_float, threshold, maxvalue,
+                cv::THRESH_BINARY);
   cv::Mat bit_map;
-  cv::threshold(cbuf_map, bit_map, threshold, maxvalue, cv::THRESH_BINARY);
+  bit_map_float.convertTo(bit_map, CV_8UC1);
 
   std::vector<std::vector<std::vector<int>>> boxes =
       boxes_from_bitmap(pred_map, bit_map);
