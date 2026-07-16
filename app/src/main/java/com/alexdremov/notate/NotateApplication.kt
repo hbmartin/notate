@@ -3,15 +3,57 @@ package com.alexdremov.notate
 import android.app.Application
 import android.os.Build
 import com.alexdremov.notate.config.CanvasConfig
+import com.alexdremov.notate.data.CanvasRepository
+import com.alexdremov.notate.data.CanvasSession
+import com.alexdremov.notate.data.DocumentIndexIntegration
+import com.alexdremov.notate.data.DocumentIndexIntegrationOwner
 import com.alexdremov.notate.data.PreferencesManager
+import com.alexdremov.notate.data.SyncPdfGenerator
+import com.alexdremov.notate.data.SyncPdfGeneratorOwner
+import com.alexdremov.notate.data.SyncManager
+import com.alexdremov.notate.data.SyncService
+import com.alexdremov.notate.data.SyncServiceOwner
+import com.alexdremov.notate.export.PdfService
+import com.alexdremov.notate.ocr.index.OcrDocumentIndexIntegration
+import com.alexdremov.notate.navigation.NotateNavigator
+import com.alexdremov.notate.navigation.NotateNavigatorOwner
 import com.alexdremov.notate.util.Logger
 import com.onyx.android.sdk.rx.RxBaseAction
 import com.onyx.android.sdk.utils.ResManager
 import org.lsposed.hiddenapibypass.HiddenApiBypass
+import java.io.OutputStream
 
-class NotateApplication : Application() {
+class NotateApplication :
+    Application(),
+    DocumentIndexIntegrationOwner,
+    SyncPdfGeneratorOwner,
+    SyncServiceOwner,
+    NotateNavigatorOwner {
     companion object {
         private const val TAG = "NotateApplication"
+    }
+
+    override val documentIndexIntegration: DocumentIndexIntegration by lazy {
+        OcrDocumentIndexIntegration(this)
+    }
+
+    override val notateNavigator: NotateNavigator by lazy { AppNotateNavigator() }
+
+    override val syncService: SyncService by lazy {
+        SyncManager(this, CanvasRepository(this))
+    }
+
+    override val syncPdfGenerator: SyncPdfGenerator by lazy {
+        val pdfService = PdfService(this)
+        object : SyncPdfGenerator {
+            override suspend fun generate(
+                session: CanvasSession,
+                outputStream: OutputStream,
+                isVector: Boolean,
+                bitmapScale: Float,
+                onProgress: ((Int, String) -> Unit)?,
+            ) = pdfService.exportSession(session, outputStream, isVector, bitmapScale, onProgress)
+        }
     }
 
     override fun onCreate() {

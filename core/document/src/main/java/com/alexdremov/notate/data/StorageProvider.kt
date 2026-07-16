@@ -1,0 +1,1329 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
+package com.alexdremov.notate.data
+
+import android.content.Context
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
+import com.alexdremov.notate.model.Tag
+import com.alexdremov.notate.util.Logger
+import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.protobuf.ProtoBuf
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.ArrayDeque
+
+interface StorageProvider {
+    fun isApplicable(path: String?): Boolean
+
+    fun getRootPath(): String
+
+    fun getItems(path: String?): List<FileSystemItem>
+
+    fun createFolder(
+        name: String,
+        parentPath: String?,
+    ): Boolean
+
+    fun createCanvas(
+        name: String,
+        parentPath: String?,
+        data: CanvasData,
+    ): String?
+
+    fun deleteItem(path: String): Boolean
+
+    fun renameItem(
+        path: String,
+        newName: String,
+    ): Boolean
+
+    fun duplicateItem(
+        path: String,
+        parentPath: String?,
+    ): Boolean
+
+    fun setTags(
+        path: String,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag> = emptyList(),
+    ): Boolean
+
+    fun findFilesWithTag(tagId: String): List<CanvasItem>
+
+    // New indexing support
+    fun walkFiles(visitor: (String, String, Long) -> Unit)
+
+    fun getFileMetadata(path: String): CanvasDataPreview?
+
+    // Support for ensuring UUID exists (migration) and optional regeneration
+    fun ensureUuid(
+        path: String,
+        force: Boolean = false,
+    ): String? = null
+}
+
+object StorageUtils {
+    private const val LARGE_FILE_THRESHOLD = 10 * 1024 * 1024 // 10MB
+
+    fun getSafeFileName(name: String): String = name.replace("[^a-zA-Z0-9\\s]".toRegex(), "").trim()
+
+    fun getDuplicateName(originalName: String): String =
+        if (originalName.contains(".")) {
+            val ext = originalName.substringAfterLast(".")
+            val base = originalName.substringBeforeLast(".")
+            "$base Copy.$ext"
+        } else {
+            "$originalName Copy"
+        }
+
+    fun getOriginInfo(
+        context: Context,
+        path: String,
+    ): Pair<Long, Long> {
+        if (path.startsWith("content://")) {
+            val uri = android.net.Uri.parse(path)
+            return try {
+                context.contentResolver
+                    .query(
+                        uri,
+                        arrayOf(
+                            android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                            android.provider.OpenableColumns.SIZE,
+                        ),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val lastMod = cursor.getLong(0)
+                            val size = cursor.getLong(1)
+                            Pair(lastMod, size)
+                        } else {
+                            Pair(0L, 0L)
+                        }
+                    } ?: Pair(0L, 0L)
+            } catch (e: Exception) {
+                Pair(0L, 0L)
+            }
+        } else {
+            val file = File(path)
+            return if (file.exists()) {
+                Pair(file.lastModified(), file.length())
+            } else {
+                Pair(0L, 0L)
+            }
+        }
+    }
+
+    fun injectUuidIntoJson(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        newUuid: String,
+    ) {
+        try {
+            val content = inputStream.bufferedReader().readText()
+            // Very simple JSON manipulation for performance - just replace or insert uuid field near the start
+            val updated =
+                if (content.contains("\"uuid\"")) {
+                    content.replace(Regex("\"uuid\"\\s*:\\s*\"[^\"]*\""), "\"uuid\": \"$newUuid\"")
+                } else {
+                    // Insert after first '{'
+                    content.replaceFirst("{", "{\n  \"uuid\": \"$newUuid\",")
+                }
+            outputStream.bufferedWriter().use { it.write(updated) }
+        } catch (e: Exception) {
+            Logger.e("Metadata", "Failed to inject UUID into JSON", e)
+            throw e
+        }
+    }
+
+    fun extractMetadata(
+        fileName: String?,
+        streamProvider: () -> InputStream?,
+        fileSize: Long = 0,
+    ): CanvasDataPreview? {
+        if (fileSize > LARGE_FILE_THRESHOLD) {
+            Logger.d("Storage", "Reading metadata from large file: $fileName (${fileSize / 1024 / 1024}MB)")
+        }
+
+        return try {
+            streamProvider()?.use { rawStream ->
+                val bufferSize = 1024
+                val stream = if (rawStream.markSupported()) rawStream else java.io.BufferedInputStream(rawStream)
+                stream.mark(bufferSize)
+                val buffer = ByteArray(bufferSize)
+                val read = stream.read(buffer)
+                stream.reset()
+
+                if (isZipSignature(buffer, read)) {
+                    // ZIP format
+                    extractMetadataZip(stream)
+                } else if (isJsonLike(buffer, read)) {
+                    // JSON format
+                    extractMetadataJson(stream)
+                } else {
+                    // Legacy Protobuf
+                    parseProtobufMetadata(stream)
+                }
+            }
+        } catch (e: Exception) {
+            Logger.e("Metadata", "Failed to identify/read file format: $fileName", e)
+            null
+        }
+    }
+
+    private fun isZipSignature(
+        buffer: ByteArray,
+        read: Int,
+    ): Boolean =
+        read >= 4 &&
+            buffer[0] == 0x50.toByte() && // 'P'
+            buffer[1] == 0x4B.toByte() && // 'K'
+            buffer[2] == 0x03.toByte() &&
+            buffer[3] == 0x04.toByte()
+
+    private fun isJsonLike(
+        buffer: ByteArray,
+        read: Int,
+    ): Boolean {
+        if (read <= 0) return false
+        var index = 0
+        // Skip BOM
+        if (read >= 3 &&
+            buffer[0] == 0xEF.toByte() &&
+            buffer[1] == 0xBB.toByte() &&
+            buffer[2] == 0xBF.toByte()
+        ) {
+            index = 3
+        }
+        // Skip leading whitespace
+        while (index < read && buffer[index].toInt().toChar().isWhitespace()) {
+            index++
+        }
+        return index < read && buffer[index] == 0x7B.toByte() // '{'
+    }
+
+    private fun extractMetadataZip(stream: InputStream): CanvasDataPreview? {
+        return try {
+            val zipStream = java.util.zip.ZipInputStream(stream)
+            var entry = zipStream.nextEntry
+            while (entry != null) {
+                if (entry.name == "manifest.bin") {
+                    // Found manifest, parse it as protobuf
+                    // ZipInputStream reads until end of entry, which is what we want
+                    // Logger.d("Metadata", "Found manifest.bin")
+                    return parseProtobufMetadata(zipStream)
+                }
+                entry = zipStream.nextEntry
+            }
+            // Logger.w("Metadata", "manifest.bin not found in ZIP")
+            null
+        } catch (e: Exception) {
+            Logger.e("Metadata", "Failed to extract metadata from ZIP", e)
+            null
+        }
+    }
+
+    private fun extractMetadataJson(stream: InputStream): CanvasDataPreview? {
+        return try {
+            val buffer = ByteArray(500 * 1024) // 500KB limit for header
+            val read = stream.read(buffer)
+            if (read <= 0) return null
+            val header = String(buffer, 0, read, Charsets.UTF_8)
+            val match = Regex("""thumbnail"\s*:\s*"([^"]+)""").find(header)
+            val thumbnail = match?.groupValues?.get(1)
+
+            val uuidMatch = Regex("""uuid"\s*:\s*"([^"]+)""").find(header)
+            val uuid = uuidMatch?.groupValues?.get(1)
+
+            CanvasDataPreview(thumbnail = thumbnail, uuid = uuid)
+        } catch (e: Exception) {
+            Logger.e("Metadata", "Failed to extract metadata from JSON", e)
+            null
+        }
+    }
+
+    private fun parseProtobufMetadata(stream: InputStream): CanvasDataPreview? =
+        try {
+            var thumbnail: String? = null
+            var uuid: String? = null
+            val tagIds = mutableListOf<String>()
+            val tagDefinitions = mutableListOf<Tag>()
+
+            while (true) {
+                val tag = readVarint(stream)
+                if (tag == -1L) break
+
+                val fieldNumber = (tag ushr 3).toInt()
+                val wireType = (tag and 0x07).toInt()
+
+                when (fieldNumber) {
+                    1 -> { // thumbnail
+                        if (wireType != 2) {
+                            skipField(stream, wireType)
+                        } else {
+                            val length = readVarint(stream)
+                            if (length > 0) {
+                                val bytes = ByteArray(length.toInt())
+                                readFully(stream, bytes)
+                                thumbnail = String(bytes, Charsets.UTF_8)
+                            }
+                        }
+                    }
+
+                    13 -> { // tagIds
+                        if (wireType != 2) {
+                            skipField(stream, wireType)
+                        } else {
+                            val length = readVarint(stream)
+                            if (length > 0) {
+                                val bytes = ByteArray(length.toInt())
+                                readFully(stream, bytes)
+                                tagIds.add(String(bytes, Charsets.UTF_8))
+                            }
+                        }
+                    }
+
+                    14 -> { // tagDefinitions
+                        if (wireType != 2) {
+                            skipField(stream, wireType)
+                        } else {
+                            val length = readVarint(stream)
+                            if (length > 0) {
+                                val bytes = ByteArray(length.toInt())
+                                readFully(stream, bytes)
+                                try {
+                                    val tagVal = ProtoBuf.decodeFromByteArray(Tag.serializer(), bytes)
+                                    tagDefinitions.add(tagVal)
+                                } catch (e: Exception) {
+                                    // Ignore malformed tag
+                                }
+                            }
+                        }
+                    }
+
+                    17 -> { // uuid
+                        if (wireType != 2) {
+                            skipField(stream, wireType)
+                        } else {
+                            val length = readVarint(stream)
+                            if (length > 0) {
+                                val bytes = ByteArray(length.toInt())
+                                readFully(stream, bytes)
+                                uuid = String(bytes, Charsets.UTF_8)
+                                Logger.d("Metadata", "Parsed UUID: $uuid")
+                            }
+                        }
+                    }
+
+                    else -> {
+                        skipField(stream, wireType)
+                    }
+                }
+            }
+            CanvasDataPreview(thumbnail, tagIds, tagDefinitions, uuid)
+        } catch (e: Exception) {
+            Logger.e(
+                "Metadata",
+                "Failed to extract metadata from protobuf; the data may be malformed or the schema may be incompatible",
+                e,
+            )
+            null
+        }
+
+    fun updateMetadata(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag>,
+        uuid: String? = null,
+    ) {
+        val rawStream = if (inputStream.markSupported()) inputStream else java.io.BufferedInputStream(inputStream)
+        val bufferSize = 1024
+        rawStream.mark(bufferSize)
+        val buffer = ByteArray(bufferSize)
+        val read = rawStream.read(buffer)
+        rawStream.reset()
+
+        if (isZipSignature(buffer, read)) {
+            // ZIP format
+            updateMetadataZip(rawStream, outputStream, tagIds, tagDefinitions, uuid)
+        } else if (isJsonLike(buffer, read)) {
+            // JSON format
+            if (uuid != null) {
+                injectUuidIntoJson(rawStream, outputStream, uuid)
+            } else {
+                rawStream.copyTo(outputStream)
+            }
+        } else {
+            // Legacy Protobuf
+            createUpdatedProtobuf(rawStream, outputStream, tagIds, tagDefinitions, uuid)
+        }
+    }
+
+    private fun updateMetadataZip(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag>,
+        uuid: String? = null,
+    ) {
+        val zis = java.util.zip.ZipInputStream(inputStream)
+        val zos = java.util.zip.ZipOutputStream(outputStream)
+
+        try {
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val newEntry = java.util.zip.ZipEntry(entry.name)
+                newEntry.time = entry.time
+                zos.putNextEntry(newEntry)
+
+                if (entry.name == "manifest.bin") {
+                    createUpdatedProtobuf(zis, zos, tagIds, tagDefinitions, uuid)
+                } else {
+                    zis.copyTo(zos)
+                }
+                zos.closeEntry()
+                entry = zis.nextEntry
+            }
+        } finally {
+            zos.finish()
+        }
+    }
+
+    fun createUpdatedProtobuf(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        newTagIds: List<String>,
+        newTagDefinitions: List<Tag>,
+        newUuid: String? = null,
+    ) {
+        while (true) {
+            val tag = readVarint(inputStream)
+            if (tag == -1L) break
+
+            val fieldNumber = (tag ushr 3).toInt()
+            val wireType = (tag and 0x07).toInt()
+
+            if (fieldNumber == 13 || fieldNumber == 14) {
+                // Skip this field
+                skipField(inputStream, wireType)
+            } else if (fieldNumber == 17 && newUuid != null) {
+                // Skip existing UUID if we are setting a new one
+                skipField(inputStream, wireType)
+            } else {
+                // Write tag
+                writeVarint(outputStream, tag)
+                // Copy payload based on wire type
+                when (wireType) {
+                    0 -> { // Varint
+                        val value = readVarint(inputStream)
+                        writeVarint(outputStream, value)
+                    }
+
+                    1 -> { // 64-bit
+                        val bytes = ByteArray(8)
+                        readFully(inputStream, bytes)
+                        outputStream.write(bytes)
+                    }
+
+                    2 -> { // Length Delimited
+                        val length = readVarint(inputStream)
+                        writeVarint(outputStream, length)
+                        copyBytes(inputStream, outputStream, length)
+                    }
+
+                    5 -> { // 32-bit
+                        val bytes = ByteArray(4)
+                        readFully(inputStream, bytes)
+                        outputStream.write(bytes)
+                    }
+
+                    else -> {
+                        throw java.io.IOException("Unsupported wire type: $wireType")
+                    }
+                }
+            }
+        }
+
+        // Append new tagIds
+        val tagIdFieldNumber = 13
+        val tagIdTag = (tagIdFieldNumber shl 3) or 2
+        for (id in newTagIds) {
+            val bytes = id.toByteArray(Charsets.UTF_8)
+            writeVarint(outputStream, tagIdTag.toLong())
+            writeVarint(outputStream, bytes.size.toLong())
+            outputStream.write(bytes)
+        }
+
+        // Append new tagDefinitions
+        val tagDefFieldNumber = 14
+        val tagDefTag = (tagDefFieldNumber shl 3) or 2
+        for (def in newTagDefinitions) {
+            val bytes = ProtoBuf.encodeToByteArray(Tag.serializer(), def)
+            writeVarint(outputStream, tagDefTag.toLong())
+            writeVarint(outputStream, bytes.size.toLong())
+            outputStream.write(bytes)
+        }
+
+        // Append new UUID if provided
+        if (newUuid != null) {
+            val uuidFieldNumber = 17
+            val uuidTag = (uuidFieldNumber shl 3) or 2
+            val bytes = newUuid.toByteArray(Charsets.UTF_8)
+            writeVarint(outputStream, uuidTag.toLong())
+            writeVarint(outputStream, bytes.size.toLong())
+            outputStream.write(bytes)
+        }
+    }
+
+    fun createV2CanvasZip(
+        outputStream: OutputStream,
+        data: CanvasData,
+    ) {
+        java.util.zip.ZipOutputStream(outputStream).use { zos ->
+            // 1. manifest.bin
+            val manifestEntry = java.util.zip.ZipEntry("manifest.bin")
+            zos.putNextEntry(manifestEntry)
+            val manifestBytes = ProtoBuf.encodeToByteArray(CanvasData.serializer(), data)
+            zos.write(manifestBytes)
+            zos.closeEntry()
+
+            // 2. index.bin (Empty region list)
+            val indexEntry = java.util.zip.ZipEntry("index.bin")
+            zos.putNextEntry(indexEntry)
+            // Empty list of RegionBoundsProto
+            val indexBytes =
+                ProtoBuf.encodeToByteArray(
+                    kotlinx.serialization.builtins.ListSerializer(RegionBoundsProto.serializer()),
+                    emptyList(),
+                )
+            zos.write(indexBytes)
+            zos.closeEntry()
+        }
+    }
+
+    private fun readVarint(stream: InputStream): Long {
+        var value = 0L
+        var shift = 0
+        var count = 0
+        while (true) {
+            val b = stream.read()
+            if (b == -1) {
+                if (count == 0) return -1L
+                throw java.io.EOFException("Unexpected EOF inside varint")
+            }
+            value = value or ((b.toLong() and 0x7F) shl shift)
+            if ((b and 0x80) == 0) break
+            shift += 7
+            count++
+            if (shift > 63) throw java.io.IOException("Varint too long")
+        }
+        return value
+    }
+
+    private fun writeVarint(
+        stream: OutputStream,
+        value: Long,
+    ) {
+        var v = value
+        while (true) {
+            if ((v and 0x7F.inv()) == 0L) {
+                stream.write(v.toInt())
+                break
+            } else {
+                stream.write((v.toInt() and 0x7F) or 0x80)
+                v = v ushr 7
+            }
+        }
+    }
+
+    private fun readFully(
+        stream: InputStream,
+        bytes: ByteArray,
+    ) {
+        var pos = 0
+        while (pos < bytes.size) {
+            val r = stream.read(bytes, pos, bytes.size - pos)
+            if (r == -1) throw java.io.EOFException("Unexpected EOF reading bytes")
+            pos += r
+        }
+    }
+
+    private fun copyBytes(
+        input: InputStream,
+        output: OutputStream,
+        count: Long,
+    ) {
+        val buffer = ByteArray(8192)
+        var remaining = count
+        while (remaining > 0) {
+            val toRead = minOf(remaining, buffer.size.toLong()).toInt()
+            val read = input.read(buffer, 0, toRead)
+            if (read == -1) throw java.io.EOFException("Unexpected EOF copying bytes")
+            output.write(buffer, 0, read)
+            remaining -= read
+        }
+    }
+
+    private fun skipField(
+        stream: InputStream,
+        wireType: Int,
+    ) {
+        when (wireType) {
+            0 -> {
+                readVarint(stream)
+            }
+
+            1 -> {
+                skipBytes(stream, 8)
+            }
+
+            2 -> {
+                val length = readVarint(stream)
+                skipBytes(stream, length)
+            }
+
+            5 -> {
+                skipBytes(stream, 4)
+            }
+
+            else -> {
+                throw java.io.IOException("Unsupported wire type: $wireType")
+            }
+        }
+    }
+
+    private fun skipBytes(
+        stream: InputStream,
+        count: Long,
+    ) {
+        var remaining = count
+        while (remaining > 0) {
+            val skipped = stream.skip(remaining)
+            if (skipped <= 0) {
+                if (stream.read() == -1) throw java.io.EOFException("Unexpected EOF skipping bytes")
+                remaining--
+            } else {
+                remaining -= skipped
+            }
+        }
+    }
+}
+
+class LocalStorageProvider(
+    private val context: Context,
+    private val rootDir: File,
+) : StorageProvider {
+    override fun isApplicable(path: String?): Boolean = path == null || !path.startsWith("content://")
+
+    override fun getRootPath(): String = rootDir.absolutePath
+
+    override fun getItems(path: String?): List<FileSystemItem> {
+        val targetPath = path ?: rootDir.absolutePath
+        val targetDir = File(targetPath)
+        if (!targetDir.exists()) {
+            Logger.w("Storage", "Directory not found: $targetPath")
+            return emptyList()
+        }
+
+        return try {
+            targetDir
+                .listFiles()
+                ?.mapNotNull {
+                    when {
+                        it.isDirectory -> {
+                            ProjectItem(
+                                name = it.name,
+                                fileName = it.name,
+                                path = it.absolutePath,
+                                lastModified = it.lastModified(),
+                                size = 0L,
+                                itemsCount = it.list()?.size ?: 0,
+                            )
+                        }
+
+                        it.extension == "json" || it.extension == "notate" -> {
+                            val metadata = StorageUtils.extractMetadata(it.name, { it.inputStream() }, it.length())
+                            CanvasItem(
+                                name = it.nameWithoutExtension,
+                                fileName = it.name,
+                                path = it.absolutePath,
+                                lastModified = it.lastModified(),
+                                size = it.length(),
+                                thumbnail = metadata?.thumbnail,
+                                tagIds = metadata?.tagIds ?: emptyList(),
+                                embeddedTags = metadata?.tagDefinitions ?: emptyList(),
+                                uuid = metadata?.uuid,
+                            )
+                        }
+
+                        else -> {
+                            null
+                        }
+                    }
+                }?.sortedByDescending { it.lastModified } ?: emptyList()
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to list items in $targetPath", e, showToUser = true)
+            emptyList()
+        }
+    }
+
+    override fun createFolder(
+        name: String,
+        parentPath: String?,
+    ): Boolean {
+        val targetPath = parentPath ?: rootDir.absolutePath
+        val parent = File(targetPath)
+        val newDir = File(parent, name)
+        return try {
+            if (!newDir.exists()) newDir.mkdirs() else false
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to create folder $name", e, showToUser = true)
+            false
+        }
+    }
+
+    override fun createCanvas(
+        name: String,
+        parentPath: String?,
+        data: CanvasData,
+    ): String? {
+        val targetPath = parentPath ?: rootDir.absolutePath
+        val safeName = StorageUtils.getSafeFileName(name)
+        val fileName = "$safeName.notate"
+
+        val parent = File(targetPath)
+        val file = File(parent, fileName)
+
+        return try {
+            if (!file.exists()) {
+                file.outputStream().use { os ->
+                    StorageUtils.createV2CanvasZip(os, data)
+                }
+                file.absolutePath
+            } else {
+                Logger.w("Storage", "File already exists: $fileName")
+                null
+            }
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to create canvas $name", e, showToUser = true)
+            null
+        }
+    }
+
+    override fun deleteItem(path: String): Boolean {
+        val file = File(path)
+        if (!file.exists()) return false
+
+        // Prevent deleting open files - only lock regular files, as acquire() creates missing files
+        // and cannot lock directories.
+        if (file.isFile) {
+            try {
+                com.alexdremov.notate.data.io.FileLockManager
+                    .acquire(path)
+                    .close()
+            } catch (e: Exception) {
+                Logger.w("Storage", "Cannot delete item, file locked: $path")
+                return false
+            }
+        }
+
+        return try {
+            file.deleteRecursively()
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to delete item $path", e, showToUser = true)
+            false
+        }
+    }
+
+    override fun renameItem(
+        path: String,
+        newName: String,
+    ): Boolean {
+        val file = File(path)
+        if (!file.exists()) return false
+
+        // Prevent renaming open files - only lock regular files
+        if (file.isFile) {
+            try {
+                com.alexdremov.notate.data.io.FileLockManager
+                    .acquire(path)
+                    .close()
+            } catch (e: Exception) {
+                Logger.w("Storage", "Cannot rename item, file locked: $path")
+                return false
+            }
+        }
+
+        val finalName =
+            if (file.isDirectory) {
+                newName
+            } else {
+                val ext = file.extension
+                if (newName.endsWith(".$ext", ignoreCase = true)) {
+                    newName
+                } else {
+                    "$newName.$ext"
+                }
+            }
+
+        val newFile = File(file.parent, finalName)
+        return try {
+            file.renameTo(newFile)
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to rename item $path", e, showToUser = true)
+            false
+        }
+    }
+
+    override fun duplicateItem(
+        path: String,
+        parentPath: String?,
+    ): Boolean {
+        // Read lock not strictly required for duplication (copy),
+        // but nice to have consistency if we want "snapshot isolation".
+        // However, OS copy works fine on open files usually.
+        // For now, allowing duplication of open files is a feature (backup).
+        val file = File(path)
+        if (!file.exists()) return false
+
+        try {
+            val newFile =
+                if (file.isDirectory) {
+                    val newDir = File(file.parent, "${file.name} Copy")
+                    if (file.copyRecursively(newDir, overwrite = false)) newDir else null
+                } else {
+                    val newName = StorageUtils.getDuplicateName(file.name)
+                    val nf = File(file.parent, newName)
+                    if (file.copyTo(nf, overwrite = false).exists()) nf else null
+                }
+
+            if (newFile != null && newFile.isFile) {
+                // IMPORTANT: Generate a new UUID for the duplicate to avoid collisions
+                ensureUuid(newFile.absolutePath, force = true)
+            }
+            return newFile != null
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to duplicate item $path", e, showToUser = true)
+            return false
+        }
+    }
+
+    override fun setTags(
+        path: String,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag>,
+    ): Boolean {
+        val file = File(path)
+        if (!file.exists() || file.isDirectory) return false
+
+        if (file.extension != "notate" && file.extension != "json") return false
+
+        // Acquire lock to ensure we don't modify an open file
+        val lock =
+            try {
+                com.alexdremov.notate.data.io.FileLockManager
+                    .acquire(path)
+            } catch (e: Exception) {
+                Logger.w("Storage", "Cannot set tags, file locked: $path")
+                return false
+            }
+
+        val tempFile = File(file.parent, file.name + ".tmp")
+        return try {
+            file.inputStream().use { input ->
+                tempFile.outputStream().use { output ->
+                    StorageUtils.updateMetadata(input, output, tagIds, tagDefinitions)
+                }
+            }
+            Files.move(
+                tempFile.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+            true
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to set tags for $path", e, showToUser = true)
+            tempFile.delete()
+            false
+        } finally {
+            lock.close()
+        }
+    }
+
+    override fun findFilesWithTag(tagId: String): List<CanvasItem> =
+        try {
+            rootDir
+                .walk()
+                .maxDepth(20) // Limit recursion depth
+                .filter { it.isFile && (it.extension == "json" || it.extension == "notate") }
+                .mapNotNull {
+                    val metadata = StorageUtils.extractMetadata(it.name, { it.inputStream() }, it.length())
+                    if (metadata?.tagIds?.contains(tagId) == true) {
+                        CanvasItem(
+                            name = it.nameWithoutExtension,
+                            fileName = it.name,
+                            path = it.absolutePath,
+                            lastModified = it.lastModified(),
+                            size = it.length(),
+                            thumbnail = metadata.thumbnail,
+                            tagIds = metadata.tagIds,
+                            embeddedTags = metadata.tagDefinitions,
+                        )
+                    } else {
+                        null
+                    }
+                }.toList()
+                .sortedByDescending { it.lastModified }
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to search files in ${rootDir.absolutePath}", e)
+            emptyList()
+        }
+
+    override fun walkFiles(visitor: (String, String, Long) -> Unit) {
+        rootDir
+            .walk()
+            .maxDepth(20)
+            .filter { it.isFile && (it.extension == "json" || it.extension == "notate") }
+            .forEach {
+                visitor(it.absolutePath, it.nameWithoutExtension, it.lastModified())
+            }
+    }
+
+    override fun getFileMetadata(path: String): CanvasDataPreview? {
+        val file = File(path)
+        if (!file.exists()) return null
+        return StorageUtils.extractMetadata(file.name, { file.inputStream() }, file.length())
+    }
+
+    override fun ensureUuid(
+        path: String,
+        force: Boolean,
+    ): String? {
+        val file = File(path)
+        if (!file.exists()) return null
+
+        // 1. Check existing (fast)
+        var meta = getFileMetadata(path)
+        if (meta?.uuid != null && !force) return meta.uuid
+
+        // 2. Write
+        val lock =
+            try {
+                com.alexdremov.notate.data.io.FileLockManager
+                    .acquire(path)
+            } catch (e: Exception) {
+                Logger.w("Storage", "ensureUuid: Failed to acquire lock for $path")
+                return null
+            }
+
+        return try {
+            // 3. Re-check after lock to prevent double-generation
+            meta = getFileMetadata(path)
+            if (meta?.uuid != null && !force) return meta.uuid
+
+            // 4. Generate new
+            val newUuid =
+                java.util.UUID
+                    .randomUUID()
+                    .toString()
+            Logger.i("Storage", "ensureUuid: Generating new UUID $newUuid for $path (Force=$force)")
+
+            val tempFile = File(file.parent, file.name + ".tmp")
+            file.inputStream().use { input ->
+                tempFile.outputStream().use { output ->
+                    StorageUtils.updateMetadata(
+                        input,
+                        output,
+                        meta?.tagIds ?: emptyList(),
+                        meta?.tagDefinitions ?: emptyList(),
+                        newUuid,
+                    )
+                }
+            }
+            Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            newUuid
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to ensure UUID", e)
+            null
+        } finally {
+            lock.close()
+        }
+    }
+}
+
+class SafStorageProvider(
+    private val context: Context,
+    private val rootUriString: String,
+) : StorageProvider {
+    override fun isApplicable(path: String?): Boolean = path != null && path.startsWith("content://")
+
+    override fun getRootPath(): String = rootUriString
+
+    override fun getItems(path: String?): List<FileSystemItem> {
+        val targetUri = if (path != null) Uri.parse(path) else Uri.parse(rootUriString)
+        val dir = DocumentFile.fromTreeUri(context, targetUri) ?: return emptyList()
+
+        return try {
+            dir
+                .listFiles()
+                .mapNotNull {
+                    when {
+                        it.isDirectory -> {
+                            ProjectItem(
+                                name = it.name ?: "Unknown",
+                                fileName = it.name ?: "Unknown",
+                                path = it.uri.toString(),
+                                lastModified = it.lastModified(),
+                                size = 0L,
+                                itemsCount = 0,
+                            )
+                        }
+
+                        it.name?.endsWith(".json") == true || it.name?.endsWith(".notate") == true -> {
+                            val name = it.name ?: "Unknown"
+                            val isJsonExt = name.endsWith(".json")
+                            val metadata =
+                                StorageUtils.extractMetadata(it.name, {
+                                    try {
+                                        context.contentResolver.openInputStream(it.uri)
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                }, it.length())
+                            CanvasItem(
+                                name = name.removeSuffix(if (isJsonExt) ".json" else ".notate"),
+                                fileName = name,
+                                path = it.uri.toString(),
+                                lastModified = it.lastModified(),
+                                size = it.length(),
+                                thumbnail = metadata?.thumbnail,
+                                tagIds = metadata?.tagIds ?: emptyList(),
+                                embeddedTags = metadata?.tagDefinitions ?: emptyList(),
+                                uuid = metadata?.uuid,
+                            )
+                        }
+
+                        else -> {
+                            null
+                        }
+                    }
+                }.sortedByDescending { it.lastModified }
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to list items in $rootUriString", e, showToUser = true)
+            emptyList()
+        }
+    }
+
+    override fun createFolder(
+        name: String,
+        parentPath: String?,
+    ): Boolean {
+        val targetUri = if (parentPath != null) Uri.parse(parentPath) else Uri.parse(rootUriString)
+        val parentDir = DocumentFile.fromTreeUri(context, targetUri) ?: return false
+
+        return try {
+            if (parentDir.findFile(name) == null) {
+                parentDir.createDirectory(name) != null
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to create folder $name", e, showToUser = true)
+            false
+        }
+    }
+
+    override fun createCanvas(
+        name: String,
+        parentPath: String?,
+        data: CanvasData,
+    ): String? {
+        val targetUri = if (parentPath != null) Uri.parse(parentPath) else Uri.parse(rootUriString)
+        val parentDir = DocumentFile.fromTreeUri(context, targetUri) ?: return null
+
+        val safeName = StorageUtils.getSafeFileName(name)
+        val fileName = "$safeName.notate"
+
+        if (parentDir.findFile(fileName) != null) return null
+
+        // Using octet-stream for .notate
+        val newFile = parentDir.createFile("application/octet-stream", fileName) ?: return null
+
+        return try {
+            context.contentResolver.openOutputStream(newFile.uri)?.use { os ->
+                StorageUtils.createV2CanvasZip(os, data)
+            }
+            newFile.uri.toString()
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to create SAF canvas", e, showToUser = true)
+            null
+        }
+    }
+
+    override fun deleteItem(path: String): Boolean {
+        val uri = Uri.parse(path)
+        val df = DocumentFile.fromTreeUri(context, uri) ?: DocumentFile.fromSingleUri(context, uri)
+        return try {
+            df?.delete() == true
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to delete item $path", e, showToUser = true)
+            false
+        }
+    }
+
+    override fun renameItem(
+        path: String,
+        newName: String,
+    ): Boolean {
+        val uri = Uri.parse(path)
+        // Try TreeUri first, then SingleUri
+        val df = DocumentFile.fromTreeUri(context, uri) ?: DocumentFile.fromSingleUri(context, uri) ?: return false
+
+        val finalName =
+            if (df.isDirectory) {
+                newName
+            } else {
+                val currentName = df.name ?: ""
+                val ext = if (currentName.endsWith(".json")) ".json" else ".notate"
+                if (currentName.endsWith(ext, ignoreCase = true) && !newName.endsWith(ext, ignoreCase = true)) {
+                    "$newName$ext"
+                } else {
+                    newName
+                }
+            }
+
+        return try {
+            df.renameTo(finalName)
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to rename item $path", e, showToUser = true)
+            false
+        }
+    }
+
+    override fun duplicateItem(
+        path: String,
+        parentPath: String?,
+    ): Boolean {
+        val srcUri = Uri.parse(path)
+        // We need the parent directory to create the new file.
+        val targetParentUri = if (parentPath != null) Uri.parse(parentPath) else Uri.parse(rootUriString)
+        val parentDir = DocumentFile.fromTreeUri(context, targetParentUri) ?: return false
+
+        // Get source info
+        val srcFile = DocumentFile.fromSingleUri(context, srcUri) ?: return false
+        if (srcFile.isDirectory) return false
+
+        val name = srcFile.name ?: "Unknown"
+        val newName = StorageUtils.getDuplicateName(name)
+
+        val mime = srcFile.type ?: "application/octet-stream"
+        val newFile = parentDir.createFile(mime, newName) ?: return false
+
+        return try {
+            context.contentResolver.openInputStream(srcUri)?.use { input ->
+                context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                    input.copyTo(output)
+                }
+            }
+            // Generate new UUID for SAF duplicate
+            ensureUuid(newFile.uri.toString(), force = true)
+            true
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to duplicate item $path", e, showToUser = true)
+            newFile.delete()
+            false
+        }
+    }
+
+    override fun setTags(
+        path: String,
+        tagIds: List<String>,
+        tagDefinitions: List<Tag>,
+    ): Boolean {
+        val uri = Uri.parse(path)
+        val file = DocumentFile.fromSingleUri(context, uri) ?: return false
+
+        if (file.isDirectory) return false
+        // Basic check for file extension from name
+        val name = file.name ?: ""
+        if (!name.endsWith(".notate") && !name.endsWith(".json")) return false
+
+        val tempFile = File.createTempFile("saf_update", ".tmp", context.cacheDir)
+
+        return try {
+            val meta = getFileMetadata(path)
+            val uuid =
+                meta?.uuid ?: java.util.UUID
+                    .randomUUID()
+                    .toString()
+
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    StorageUtils.updateMetadata(input, output, tagIds, tagDefinitions, uuid)
+                }
+            }
+            context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                tempFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to set tags SAF", e, showToUser = true)
+            false
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    override fun findFilesWithTag(tagId: String): List<CanvasItem> {
+        val rootUri = Uri.parse(rootUriString)
+        val rootDir = DocumentFile.fromTreeUri(context, rootUri) ?: return emptyList()
+        val results = mutableListOf<CanvasItem>()
+        try {
+            searchIterative(rootDir, tagId, results)
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to search SAF", e)
+        }
+        return results.sortedByDescending { it.lastModified }
+    }
+
+    private fun searchIterative(
+        rootDir: DocumentFile,
+        tagId: String,
+        results: MutableList<CanvasItem>,
+    ) {
+        val stack = ArrayDeque<Pair<DocumentFile, Int>>()
+        stack.add(rootDir to 0)
+
+        while (!stack.isEmpty()) {
+            val (dir, depth) = stack.removeLast()
+            if (depth > 20) continue // Limit recursion depth
+
+            dir.listFiles().forEach { file ->
+                if (file.isDirectory) {
+                    stack.add(file to depth + 1)
+                } else if (file.name?.endsWith(".json") == true || file.name?.endsWith(".notate") == true) {
+                    val metadata =
+                        StorageUtils.extractMetadata(file.name, {
+                            try {
+                                context.contentResolver.openInputStream(file.uri)
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }, file.length())
+                    if (metadata?.tagIds?.contains(tagId) == true) {
+                        val name = file.name ?: "Unknown"
+                        val isJsonExt = name.endsWith(".json")
+                        results.add(
+                            CanvasItem(
+                                name = name.removeSuffix(if (isJsonExt) ".json" else ".notate"),
+                                fileName = name,
+                                path = file.uri.toString(),
+                                lastModified = file.lastModified(),
+                                size = file.length(),
+                                thumbnail = metadata.thumbnail,
+                                tagIds = metadata.tagIds,
+                                embeddedTags = metadata.tagDefinitions,
+                                uuid = metadata.uuid,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    override fun walkFiles(visitor: (String, String, Long) -> Unit) {
+        val rootUri = Uri.parse(rootUriString)
+        val rootDir = DocumentFile.fromTreeUri(context, rootUri) ?: return
+        val stack = ArrayDeque<Pair<DocumentFile, Int>>()
+        stack.add(rootDir to 0)
+
+        while (!stack.isEmpty()) {
+            val (dir, depth) = stack.removeLast()
+            if (depth > 20) continue // Limit recursion depth
+
+            dir.listFiles().forEach { file ->
+                if (file.isDirectory) {
+                    stack.add(file to depth + 1)
+                } else if (file.name?.endsWith(".json") == true || file.name?.endsWith(".notate") == true) {
+                    val name = file.name ?: "Unknown"
+                    val isJsonExt = name.endsWith(".json")
+                    val displayName = name.removeSuffix(if (isJsonExt) ".json" else ".notate")
+                    visitor(file.uri.toString(), displayName, file.lastModified())
+                }
+            }
+        }
+    }
+
+    override fun getFileMetadata(path: String): CanvasDataPreview? {
+        val uri = Uri.parse(path)
+        val name = DocumentFile.fromSingleUri(context, uri)?.name
+        return StorageUtils.extractMetadata(name, {
+            try {
+                context.contentResolver.openInputStream(uri)
+            } catch (e: Exception) {
+                null
+            }
+        })
+    }
+
+    override fun ensureUuid(
+        path: String,
+        force: Boolean,
+    ): String? {
+        val uri = Uri.parse(path)
+        val file = DocumentFile.fromSingleUri(context, uri) ?: return null
+        if (!file.exists()) return null
+
+        // 1. Check existing
+        var meta = getFileMetadata(path)
+        if (meta?.uuid != null && !force) return meta.uuid
+
+        var resultUuid: String? = null
+
+        // 2. Re-check after lock logic would go here if we had one for SAF, but we use temp files
+        // 3. Generate new
+        val newUuid =
+            java.util.UUID
+                .randomUUID()
+                .toString()
+        Logger.i("Storage", "ensureUuid (SAF): Generating new UUID $newUuid for $path (Force=$force)")
+
+        // 4. Write
+        val tempFile = File.createTempFile("saf_update_uuid", ".tmp", context.cacheDir)
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    StorageUtils.updateMetadata(
+                        input,
+                        output,
+                        meta?.tagIds ?: emptyList(),
+                        meta?.tagDefinitions ?: emptyList(),
+                        newUuid,
+                    )
+                }
+            }
+            context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                tempFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            resultUuid = newUuid
+        } catch (e: Exception) {
+            Logger.e("Storage", "Failed to ensure UUID SAF", e)
+            return null
+        } finally {
+            tempFile.delete()
+        }
+        return resultUuid
+    }
+}

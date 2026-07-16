@@ -96,6 +96,8 @@ Download the latest APK from the [Releases](https://github.com/alexdremov/notate
 
 ## 🏗️ Technical Architecture
 
+The Android code is split into narrowly owned core and feature modules; `:app` is only the application/composition root. See [`docs/architecture.md`](docs/architecture.md) for the module graph, dependency rules, and cross-feature contracts.
+
 For developers interested in E-Ink optimization, Notate employs several key patterns:
 
 ### Spatial Partitioning

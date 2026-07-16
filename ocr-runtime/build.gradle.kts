@@ -11,11 +11,9 @@ version = "1.0.0"
 
 android {
     namespace = "com.alexdremov.notate.ocr"
-    compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        minSdk = 26
         ndk {
             abiFilters += "arm64-v8a"
         }

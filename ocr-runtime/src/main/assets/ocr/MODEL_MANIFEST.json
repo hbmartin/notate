@@ -2,7 +2,7 @@
   "id": "ppocrv3-zh-en-mobile",
   "runtime": "Paddle Lite 2.10 arm64-v8a",
   "runtimeArtifact": "com.alexdremov.notate:ppocrv3-runtime:1.0.0",
-  "preprocessingVersion": 1,
+  "preprocessingVersion": 2,
   "dictionaryVersion": "ppocr_keys_v1-2022-01-18",
   "angleClassifier": false,
   "modelDelivery": {
