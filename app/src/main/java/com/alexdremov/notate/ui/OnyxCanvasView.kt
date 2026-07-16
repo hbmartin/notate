@@ -42,6 +42,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.LinkedList
+import kotlin.coroutines.resume
 
 class OnyxCanvasView
     @JvmOverloads
@@ -835,6 +836,51 @@ class OnyxCanvasView
         private var actionPopupContainer: android.widget.FrameLayout? = null
         private var isOcrRunning = false
 
+        private suspend fun ensureOcrModelsInstalled(): Boolean {
+            val manager = com.alexdremov.notate.ocr.OcrModelPackManager.get(context)
+            if (manager.isInstalled()) return true
+
+            val alreadyDownloading = manager.state.value is com.alexdremov.notate.ocr.OcrModelPackState.Downloading
+            if (!alreadyDownloading) {
+                val approved =
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+                            val dialog =
+                                android.app.AlertDialog.Builder(context)
+                                    .setTitle("Download text recognition?")
+                                    .setMessage(
+                                        "Notate needs an 11.4 MiB PP-OCRv3 model download. " +
+                                            "Recognition remains offline after the download.",
+                                    ).setPositiveButton("Download") { _, _ ->
+                                        if (continuation.isActive) continuation.resume(true)
+                                    }.setNegativeButton("Cancel") { _, _ ->
+                                        if (continuation.isActive) continuation.resume(false)
+                                    }.setOnCancelListener {
+                                        if (continuation.isActive) continuation.resume(false)
+                                    }.create()
+                            continuation.invokeOnCancellation { dialog.dismiss() }
+                            dialog.show()
+                        }
+                    }
+                if (!approved) return false
+            }
+
+            android.widget.Toast.makeText(context, "Downloading text recognition files…", android.widget.Toast.LENGTH_LONG).show()
+            return try {
+                manager.install()
+                if (com.alexdremov.notate.data.PreferencesManager.isBackgroundOcrIndexingEnabled(context)) {
+                    com.alexdremov.notate.data.worker.OcrBackfillScheduler.schedule(context, replace = true)
+                }
+                true
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                com.alexdremov.notate.util.Logger.e("PaddleOCR", "Model download failed", error, showToUser = true)
+                android.widget.Toast.makeText(context, "Text recognition download failed", android.widget.Toast.LENGTH_LONG).show()
+                false
+            }
+        }
+
         private suspend fun recognizeSelection() {
             if (isOcrRunning) return
             val selectionBounds = canvasController.getSelectionManager().getTransformedBounds()
@@ -845,8 +891,9 @@ class OnyxCanvasView
             }
 
             isOcrRunning = true
-            android.widget.Toast.makeText(context, "Recognizing text…", android.widget.Toast.LENGTH_SHORT).show()
             try {
+                if (!ensureOcrModelsInstalled()) return
+                android.widget.Toast.makeText(context, "Recognizing text…", android.widget.Toast.LENGTH_SHORT).show()
                 val raster =
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                         com.alexdremov.notate.ocr.StrokeOcrRasterizer.render(strokes)

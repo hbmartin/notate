@@ -12,6 +12,7 @@ import com.alexdremov.notate.data.CanvasRepository
 import com.alexdremov.notate.data.PreferencesManager
 import com.alexdremov.notate.data.ProjectRepository
 import com.alexdremov.notate.ocr.OcrModelInfo
+import com.alexdremov.notate.ocr.OcrModelPackManager
 import com.alexdremov.notate.ocr.index.OcrIndexDatabase
 import com.alexdremov.notate.ocr.index.OcrIndexWriter
 import com.alexdremov.notate.util.Logger
@@ -23,6 +24,7 @@ class OcrBackfillWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result {
         if (!PreferencesManager.isBackgroundOcrIndexingEnabled(applicationContext)) return Result.success()
+        if (!OcrModelPackManager.get(applicationContext).isInstalled()) return Result.success()
         val dao = OcrIndexDatabase.get(applicationContext).dao()
         val canvasRepository = CanvasRepository(applicationContext)
         val modelVersion = OcrModelInfo().indexVersion

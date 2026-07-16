@@ -9,14 +9,14 @@ The document describes the code as implemented. It is not a general PaddleOCR in
 The implementation is intentionally narrow:
 
 - PP-OCRv3 Chinese mobile text detection and Chinese/English recognition.
-- Fully offline inference on 64-bit ARM Android devices.
+- Offline inference after a one-time, user-approved model download on 64-bit ARM Android devices.
 - CPU inference through Paddle Lite 2.10 with four threads.
 - Upright handwritten note content; no learned angle-classification model.
 - Manual OCR for selected strokes, producing an editable `TextItem` while preserving the ink.
 - Background OCR for saved strokes, producing a device-local, reproducible search index.
 - Direct indexing of filenames and existing typed `TextItem` content.
 
-The implementation does not OCR imported images, backgrounds, links, or already-typed text. It does not use a cloud service, download models after installation, or enable QNN, Hexagon, NNAPI, or OpenCL acceleration.
+The implementation does not OCR imported images, backgrounds, links, or already-typed text. It does not use a cloud recognition service or enable QNN, Hexagon, NNAPI, or OpenCL acceleration. It downloads the detector, recognizer, and dictionary only when the user requests the feature; recognition itself is local afterward.
 
 ## Architecture at a glance
 
@@ -67,6 +67,8 @@ The complete inference boundary is built as the independently versioned `com.ale
 | Runtime AAR build and publication | [`ocr-runtime/build.gradle.kts`](../ocr-runtime/build.gradle.kts) |
 | Kotlin OCR contract and data objects | [`OcrModels.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OcrModels.kt) |
 | Model extraction and verification | [`OcrAssetManager.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OcrAssetManager.kt) |
+| Download, resume, verification, and activation | [`OcrModelPackManager.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OcrModelPackManager.kt) |
+| Durable settings download worker | [`OcrModelDownloadWorker.kt`](../app/src/main/java/com/alexdremov/notate/data/worker/OcrModelDownloadWorker.kt) |
 | Shared inference engine | [`PaddleLiteOcrEngine.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/PaddleLiteOcrEngine.kt) |
 | Stroke rasterization and coordinate mapping | [`StrokeOcrRasterizer.kt`](../app/src/main/java/com/alexdremov/notate/ocr/StrokeOcrRasterizer.kt) |
 | Reading order and converted-text placement | [`OcrConversionPlanner.kt`](../app/src/main/java/com/alexdremov/notate/ocr/OcrConversionPlanner.kt) |
@@ -102,6 +104,8 @@ The runtime build creates `libnotate_ppocrv3.so` and links it against:
 
 Paddle Lite's pinned ARM64 shared object is a runtime-module JNI asset. OpenCV is no longer copied into the repository: Gradle resolves `org.opencv:opencv:4.13.0`, and Android Prefab exposes its headers and `OpenCV::opencv_java4` CMake target. Gradle packages those libraries with `libnotate_ppocrv3.so` and `libc++_shared.so` in the AAR. The module's [`consumer-rules.pro`](../ocr-runtime/consumer-rules.pro) protects the name-based JNI bridge when a consuming app enables R8.
 
+The app enables `jniLibs.useLegacyPackaging` for standalone GitHub APKs. Native libraries are compressed inside the downloaded APK and extracted by Android during installation. This reduces APK transfer size without downloading executable code at runtime, but it does not reduce the uncompressed installed footprint.
+
 Build the reusable artifact with:
 
 ```bash
@@ -110,41 +114,48 @@ Build the reusable artifact with:
 
 This creates `ocr-runtime/build/outputs/aar/ocr-runtime-release.aar`. `publishReleasePublicationToMavenLocal` publishes `com.alexdremov.notate:ppocrv3-runtime:1.0.0` to the local Maven repository; a remote release repository can use the same publication without changing the library contents.
 
-### Bundled runtime and models
+### Bundled runtime and on-demand models
 
-The installed APK contains all inference dependencies. No runtime network access is required.
+Executable inference code remains inside the signed APK. The PP-OCR detector, recognizer, and dictionary are not packaged in the APK; they are downloaded from checksum-pinned official PaddleOCR locations after explicit user action.
 
-| Artifact | Version/model | Approximate uncompressed size |
-|---|---|---:|
-| `det_db.nb` | `ch_PP-OCRv3_det_slim_infer.nb` | 1.1 MB |
-| `rec_crnn.nb` | `ch_PP-OCRv3_rec_infer.nb` | 10.8 MB |
-| `ppocr_keys_v1.txt` | PP-OCR Chinese dictionary with Latin symbols | 27 KB |
-| `libpaddle_light_api_shared.so` | Paddle Lite 2.10 | 3.1 MB |
-| `libopencv_java4.so` | OpenCV 4.13.0 official Maven AAR | 24.0 MB |
-| `libnotate_ppocrv3.so` | Notate JNI and OCR pipeline | 0.2 MB |
+| Artifact | Version/model | Delivery | Approximate uncompressed size |
+|---|---|---|---:|
+| `det_db.nb` | `ch_PP-OCRv3_det_slim_infer.nb` | On demand | 1.1 MB |
+| `rec_crnn.nb` | `ch_PP-OCRv3_rec_infer.nb` | On demand | 10.8 MB |
+| `ppocr_keys_v1.txt` | PP-OCR Chinese dictionary with Latin symbols | On demand | 27 KB |
+| `libpaddle_light_api_shared.so` | Paddle Lite 2.10 | APK | 3.1 MB |
+| `libopencv_java4.so` | OpenCV 4.13.0 official Maven AAR | APK | 24.0 MB |
+| `libnotate_ppocrv3.so` | Notate JNI and OCR pipeline | APK | 0.2 MB |
 
-These artifacts total roughly 39 MB before APK compression, the C++ runtime, and alignment overhead. The assembled debug runtime AAR is about 20 MB because AAR contents are compressed. Actual APK growth depends on the build type and Android packaging.
+The on-demand model pack is 11,904,686 bytes (about 11.4 MiB). Removing it saves about 10 MB from the APK after model compression. Compressing the embedded native libraries reduces the standalone APK further; reducing installed size still requires a smaller OpenCV build or Play Feature Delivery rather than treating OpenCV as model data.
 
-[`MODEL_MANIFEST.json`](../ocr-runtime/src/main/assets/ocr/MODEL_MANIFEST.json) records the runtime coordinate, upstream locations, versions, Maven artifact checksum, native-library checksums, and a packaging note for the Paddle Lite ELF metadata normalization needed by NDK 28. Licenses for PaddleOCR, Paddle Lite, and OpenCV are included under `ocr-runtime/src/main/assets/ocr/licenses/`.
+In a clean debug build, these two changes reduced `app-debug.apk` from approximately 82 MiB to 56,452,915 bytes (53.8 MiB). The release runtime AAR is 11,054,344 bytes instead of approximately 20 MiB. Debug coverage and release shrinking differ, so release artifacts should still be measured independently.
 
-The model and dictionary files are packaged as Android assets. Paddle Lite needs filesystem paths, so they cannot be used directly from the compressed asset stream.
+[`MODEL_MANIFEST.json`](../ocr-runtime/src/main/assets/ocr/MODEL_MANIFEST.json) records the delivery mode, download size, runtime coordinate, pinned upstream locations, versions, and checksums. Licenses for PaddleOCR, Paddle Lite, and OpenCV remain packaged under `ocr-runtime/src/main/assets/ocr/licenses/`.
 
-## Model installation inside the app sandbox
+The URLs, exact byte lengths, and SHA-256 digests used by the downloader are compiled into `OcrModelPackCatalog`. The dictionary URL is pinned to a PaddleOCR Git commit rather than a mutable branch. Paddle Lite receives only verified files from app-private storage.
 
-The first inference request calls `OcrAssetManager.prepare()`:
+## On-demand model installation
 
-1. Create `<filesDir>/ocr/ppocrv3/` if necessary.
-2. Check the SHA-256 of any existing detector, recognizer, and dictionary copies.
-3. If a copy is absent or invalid, stream the packaged asset to `<name>.tmp`.
-4. Verify the temporary file against a compile-time SHA-256 constant.
-5. Delete the invalid destination, if present, and rename the verified temporary file into place.
-6. Pass the resulting absolute paths to Paddle Lite.
+Manual recognition prompts before the first download. The settings screen also provides **Download recognition files**, which enqueues a unique WorkManager job constrained to an available network. Background indexing never silently starts a download; workers exit successfully while the model pack is absent.
 
-This makes extraction self-healing after an interrupted or corrupt copy. Model and dictionary content is verified at extraction time. Native library integrity is provided by normal APK signing and installation rather than by `OcrAssetManager`.
+`OcrModelPackManager.install()` performs these steps:
+
+1. Create `<filesDir>/ocr/model-packs/ppocrv3-zh-en-mobile-v1.downloading/`.
+2. Download each file over HTTPS. A retained `.part` file is resumed with an HTTP range request when the host supports it; a host that ignores ranges restarts that file safely.
+3. Enforce the exact expected byte length while streaming and reject oversized or incomplete responses.
+4. Verify every completed file with SHA-256. A failed file is deleted instead of activated.
+5. Rename the verified staging directory to `<filesDir>/ocr/model-packs/ppocrv3-zh-en-mobile-v1/`. Because staging and final paths share a filesystem, no partially downloaded directory becomes active.
+6. Reset any failed or old predictor instance and expose `Ready` through a process-wide `StateFlow`.
+7. Pass the resulting absolute paths to Paddle Lite when recognition starts.
+
+Download cancellation or process death leaves only staging `.part` files. A later attempt resumes them. Removing recognition files deletes the current pack, partial downloads, and the legacy `<filesDir>/ocr/ppocrv3/` directory.
+
+Upgrades from the earlier bundled-model build do not redownload: the manager recognizes correctly sized legacy files and `OcrAssetManager` verifies their hashes before inference. Native-library integrity continues to come from APK signing and installation; executable `.so` files are never downloaded.
 
 Initialization is lazy. Opening a note or the search screen does not load the native predictor by itself; the first actual stroke-recognition request does.
 
-If initialization fails, the engine records the exception in `unavailableReason`. Subsequent `isAvailable()` calls return false for the rest of that process. Restarting the application process permits another initialization attempt after the underlying problem is corrected.
+If initialization fails, the engine records the exception in `unavailableReason`. Installing or removing a model pack resets the process-wide predictor so a corrected download can initialize without an application restart.
 
 ## Inference engine
 
@@ -336,7 +347,7 @@ The current Kotlin value is `ppocrv3-zh-en-mobile:1:ppocr_keys_v1`. It is stored
 
 Replacing model bytes without changing `OcrModelInfo.id`, `preprocessingVersion`, or `dictionaryVersion` will not invalidate existing region hashes. Any model, dictionary, threshold, rasterization, or coordinate behavior change that can affect output must bump the relevant version.
 
-`MODEL_MANIFEST.json` records the more specific source label `ppocr_keys_v1-2022-01-18`, while `OcrModelInfo` currently uses `ppocr_keys_v1` as its index-version component. Maintainers should keep these concepts synchronized when updating assets.
+`MODEL_MANIFEST.json` records the more specific source label `ppocr_keys_v1-2022-01-18`, while `OcrModelInfo` currently uses `ppocr_keys_v1` as its index-version component. Maintainers should keep these concepts synchronized when updating model-pack descriptors.
 
 ### Region hashing and content selection
 
@@ -484,13 +495,16 @@ Filename results have no bounds and therefore open at the viewport stored in the
 Settings → **Text recognition & search** displays:
 
 - the background-indexing switch
-- model ID and CPU/architecture summary
+- model ID, download state, progress, and any verification/download error
+- **Download recognition files** or **Remove recognition files**, depending on state
 - counts of indexed, active, and stale documents
 - **Rebuild text index**
 
 Background indexing defaults to enabled. Turning it off prevents new save-chain and backfill work, and workers that start later exit successfully. It does not delete existing index rows or disable searching those rows.
 
-Turning indexing on schedules charging/idle backfill. Rebuild first clears all OCR document, block, and FTS rows, then enqueues replacement backfill. The rebuild button is disabled while background indexing is disabled.
+Turning indexing on schedules charging/idle backfill only after models are available. Rebuild first clears all OCR document, block, and FTS rows, then enqueues replacement backfill. The rebuild button is disabled while background indexing is disabled or models are absent.
+
+Removing the model pack does not delete the local search database. Existing searchable rows remain usable, while new stroke OCR waits until the pack is downloaded again.
 
 The search database is derived, device-local data and can be rebuilt. It stores recognized and typed text as ordinary, unencrypted SQLite fields within the app sandbox. Clearing the index does not alter any note.
 
@@ -519,6 +533,8 @@ There is no hardware-specific branch for the Snapdragon 750G. Compatibility come
 ### User-visible behavior
 
 - Empty or non-stroke selection: “Select handwriting to recognize”.
+- Missing model pack: an 11.4 MiB download confirmation; cancellation makes no canvas change.
+- Download failure: logged under `PaddleOCR`, followed by “Text recognition download failed”.
 - Degenerate raster bounds: “Selection could not be rendered”.
 - No block at confidence 0.5 or higher: “No text recognized”.
 - Native/model failure: logged under `PaddleOCR`, followed by “Text recognition is unavailable”.
@@ -527,7 +543,7 @@ There is no hardware-specific branch for the Snapdragon 750G. Compatibility come
 ### Useful log tags
 
 ```bash
-adb logcat -s PaddleOCR OcrIndex OcrIndexWorker OcrBackfill OCRPredictorNative
+adb logcat -s PaddleOCR OcrModelDownload OcrIndex OcrIndexWorker OcrBackfill OCRPredictorNative
 ```
 
 Paddle Lite and the native bridge also log detector shapes, output sizes, box counts, and per-crop recognition counts. Avoid enabling verbose logs in production if note-content metadata could be sensitive.
@@ -541,22 +557,24 @@ unzip -l app/build/outputs/apk/debug/app-debug.apk \
   | rg 'lib/arm64-v8a/(libnotate_ppocrv3|libpaddle|libopencv)|assets/ocr'
 ```
 
+The output must contain the manifest and licenses but must not contain `.nb` files or `ppocr_keys_v1.txt`.
+
 List the debug app's extracted model and database directories:
 
 ```bash
-adb shell run-as com.alexdremov.notate ls -l files/ocr/ppocrv3
+adb shell run-as com.alexdremov.notate ls -l files/ocr/model-packs/ppocrv3-zh-en-mobile-v1
 adb shell run-as com.alexdremov.notate ls -l databases
 ```
 
 `run-as` requires a debuggable build and a device that permits it.
 
-Verify repository asset hashes on macOS:
+Verify a downloaded model pack on macOS after copying it from a debug device:
 
 ```bash
-shasum -a 256 ocr-runtime/src/main/assets/ocr/ppocrv3/*
+shasum -a 256 det_db.nb rec_crnn.nb ppocr_keys_v1.txt
 ```
 
-Compare the output with `MODEL_MANIFEST.json` and the constants in `OcrAssetManager`.
+Compare the output with `MODEL_MANIFEST.json` and `OcrModelPackCatalog`.
 
 ## Updating models or preprocessing
 
@@ -564,15 +582,15 @@ Treat a model update as a versioned migration:
 
 1. Obtain the `.nb` model from a trusted upstream release.
 2. Confirm it is compatible with the bundled Paddle Lite 2.10 runtime and ARM64 API.
-3. Replace the asset and record its exact upstream URL and SHA-256 in `MODEL_MANIFEST.json`.
-4. Update the corresponding SHA-256 constant in `OcrAssetManager`.
+3. Record its immutable upstream URL, exact byte length, and SHA-256 in `MODEL_MANIFEST.json`.
+4. Add a new `OcrModelPackDescriptor` in `OcrModelPackCatalog`; do not mutate a released pack ID to point at different bytes.
 5. Update bundled licenses if the source or version changes.
 6. If the detector, recognizer, dictionary, threshold, rasterization, coordinate mapping, or postprocessing can change output, bump `OcrModelInfo`'s model, preprocessing, or dictionary version.
-7. Rebuild and inspect the APK to ensure all native libraries and assets are present only for intended ABIs.
+7. Rebuild and inspect the APK to ensure no model data is bundled and native libraries remain present only for intended ABIs.
 8. Run unit, build, lint, and physical-device validation.
 9. Use **Rebuild text index** or rely on model-version backfill to regenerate existing rows.
 
-Do not change only the model asset and checksum: without an `OcrModelInfo` version change, existing matching region hashes will remain valid and old OCR output will not be recomputed.
+Do not change only the model-pack descriptor and checksum: without an `OcrModelInfo` version change, existing matching region hashes will remain valid and old OCR output will not be recomputed.
 
 ## Automated verification
 
@@ -587,6 +605,9 @@ Run the repository checks with:
 
 OCR-focused tests cover:
 
+- resumable model downloads and atomic activation
+- checksum failure without corrupt-pack activation
+- reuse and removal of legacy model copies
 - raster-to-canvas coordinate mapping
 - overlap deduplication and confidence preference
 - top/left reading order
@@ -605,6 +626,7 @@ The tests are in:
 - [`OcrSearchNormalizerTest.kt`](../app/src/test/java/com/alexdremov/notate/ocr/OcrSearchNormalizerTest.kt)
 - [`OcrIndexWriterTest.kt`](../app/src/test/java/com/alexdremov/notate/ocr/OcrIndexWriterTest.kt)
 - [`CanvasRepositoryWorkTest.kt`](../app/src/test/java/com/alexdremov/notate/data/CanvasRepositoryWorkTest.kt)
+- [`OcrModelPackInstallerTest.kt`](../ocr-runtime/src/test/java/com/alexdremov/notate/ocr/OcrModelPackInstallerTest.kt)
 
 ## Physical-device release validation
 
@@ -624,7 +646,7 @@ The intended acceptance gates are:
 
 Also verify:
 
-- first-run asset extraction and second-run reuse
+- first-run download confirmation, progress, interruption/resume, and second-run reuse
 - manual cancellation and undo/redo
 - fixed-page insertion near both page edges
 - concurrent save indexing and manual recognition
@@ -642,6 +664,7 @@ These physical-device gates have not been established by the PP-OCRv3 paper and 
 ## Current limitations
 
 - The recognizer is a scene-text model, not a model proven specifically for stylus handwriting.
+- First-time recognition requires network access to the pinned PaddleOCR download hosts.
 - Only ARM64 devices are supported by this build.
 - Manual selection OCR downscales one large selection instead of tiling it; very large selections lose detail.
 - Background OCR covers strokes only. Imported-image OCR is not implemented.
