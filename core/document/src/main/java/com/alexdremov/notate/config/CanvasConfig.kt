@@ -32,6 +32,7 @@ object CanvasConfig {
     var DEBUG_SHOW_TILES = false
     var DEBUG_SHOW_BOUNDING_BOX = false
     var DEBUG_SHOW_REGIONS = false
+    var DEBUG_LOG_GESTURES = false
     const val DEBUG_TEXT_SIZE_BASE = 40f
     const val DEBUG_STROKE_WIDTH_BASE = 2f
     const val DEBUG_TEXT_OFFSET_Y_BASE = 50f

@@ -47,10 +47,6 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val viewModel: HomeViewModel by viewModels()
 
-    companion object {
-        private var didAutoOpenDaily = false
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -60,11 +56,7 @@ class MainActivity : ComponentActivity() {
         // Handle incoming intent (e.g. from File Manager)
         handleIntent(intent)
 
-        if (savedInstanceState == null &&
-            !didAutoOpenDaily &&
-            PreferencesManager.isOpenDailyOnStartEnabled(this)
-        ) {
-            didAutoOpenDaily = true
+        if (savedInstanceState == null && PreferencesManager.isOpenDailyOnStartEnabled(this)) {
             lifecycleScope.launch {
                 val path = DailyNotesManager.openOrCreateTodayNote(this@MainActivity)
                 if (path != null) {

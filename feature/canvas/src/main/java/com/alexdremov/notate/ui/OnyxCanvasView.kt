@@ -33,6 +33,7 @@ import com.alexdremov.notate.ui.render.CanvasRenderer
 import com.alexdremov.notate.ui.render.RenderQuality
 import com.alexdremov.notate.ui.render.SelectionOverlayDrawer
 import com.alexdremov.notate.ui.selection.SelectionInteractor
+import com.alexdremov.notate.util.Logger
 import com.onyx.android.sdk.api.device.epd.EpdController
 import com.onyx.android.sdk.api.device.epd.UpdateMode
 import com.onyx.android.sdk.pen.EpdPenManager
@@ -137,6 +138,8 @@ class OnyxCanvasView
 
         @Volatile
         private var palmRejectionEnabled: Boolean = PreferencesManager.isPalmRejectionEnabled(context)
+
+        private val fingerTouchRouter = FingerTouchRouter(::detectThreeFingerTap, ::detectTwoFingerTap)
 
         private val exclusionRects = ArrayList<Rect>()
 
@@ -425,11 +428,12 @@ class OnyxCanvasView
             val isStylus = event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
             if (isStylus) return false // Handled by RawInputCallback
 
-            if (palmRejectionEnabled) return true // Palm rejection: ignore finger input (stylus draws via RawInputCallback)
-
-            if (!isReadOnly) detectTwoFingerTap(event)
-
-            if (!isReadOnly) detectThreeFingerTap(event)
+            if (fingerTouchRouter.route(event, isReadOnly, palmRejectionEnabled)) {
+                if (event.actionMasked != MotionEvent.ACTION_MOVE) {
+                    logGestureDebug("Palm rejection consumed action=${event.actionMasked}, pointers=${event.pointerCount}")
+                }
+                return true // Ignore finger input after allowing the three-finger gesture detector to observe it.
+            }
 
             // Reserve 3+ finger gestures for the distraction-free toggle (no pan/zoom/select).
             if (!isReadOnly && event.pointerCount >= 3) return true
@@ -490,14 +494,15 @@ class OnyxCanvasView
                                     TwoFingerTapAction.REDO -> viewScope.launch { redo() }
                                     TwoFingerTapAction.PASTE -> {
                                         val inv = Matrix()
-                                        matrix.invert(inv)
-                                        val pts =
-                                            floatArrayOf(
-                                                (twoFingerStartPt1[0] + twoFingerStartPt2[0]) / 2f,
-                                                (twoFingerStartPt1[1] + twoFingerStartPt2[1]) / 2f,
-                                            )
-                                        inv.mapPoints(pts)
-                                        viewScope.launch { canvasController.paste(pts[0], pts[1]) }
+                                        if (matrix.invert(inv)) {
+                                            val pts =
+                                                floatArrayOf(
+                                                    (twoFingerStartPt1[0] + twoFingerStartPt2[0]) / 2f,
+                                                    (twoFingerStartPt1[1] + twoFingerStartPt2[1]) / 2f,
+                                                )
+                                            inv.mapPoints(pts)
+                                            viewScope.launch { canvasController.paste(pts[0], pts[1]) }
+                                        }
                                     }
                                     TwoFingerTapAction.NONE -> {}
                                 }
@@ -542,6 +547,12 @@ class OnyxCanvasView
 
         fun setPalmRejectionEnabled(enabled: Boolean) {
             palmRejectionEnabled = enabled
+            logGestureDebug("Palm rejection enabled=$enabled")
+        }
+
+        fun triggerThreeFingerTapForDebug() {
+            logGestureDebug("Three-finger callback triggered from debug menu")
+            onThreeFingerTap?.invoke()
         }
 
         private fun detectThreeFingerTap(event: MotionEvent) {
@@ -549,6 +560,7 @@ class OnyxCanvasView
             if (action == MotionEvent.ACTION_POINTER_DOWN && event.pointerCount == 3) {
                 threeFingerTapDownTime = System.currentTimeMillis()
                 isThreeFingerTapCheck = true
+                logGestureDebug("Three-finger candidate started")
                 // Cancel any pending two-finger tap so 3 fingers don't also trigger undo.
                 isTwoFingerTapCheck = false
                 for (i in 0 until 3) {
@@ -559,8 +571,12 @@ class OnyxCanvasView
             } else if (action == MotionEvent.ACTION_POINTER_UP && event.pointerCount == 3) {
                 if (isThreeFingerTapCheck) {
                     val duration = System.currentTimeMillis() - threeFingerTapDownTime
-                    if (duration < CanvasConfig.TWO_FINGER_TAP_MAX_DELAY && !isThreeTapSlopExceeded(event)) {
+                    val exceededSlop = isThreeTapSlopExceeded(event)
+                    if (duration < CanvasConfig.TWO_FINGER_TAP_MAX_DELAY && !exceededSlop) {
+                        logGestureDebug("Three-finger tap recognized in ${duration}ms")
                         onThreeFingerTap?.invoke()
+                    } else {
+                        logGestureDebug("Three-finger tap rejected: duration=${duration}ms, moved=$exceededSlop")
                     }
                     isThreeFingerTapCheck = false
                 }
@@ -568,12 +584,23 @@ class OnyxCanvasView
                 if (event.pointerCount == 3) {
                     if (isThreeTapSlopExceeded(event)) {
                         isThreeFingerTapCheck = false
+                        logGestureDebug("Three-finger tap rejected: movement exceeded slop")
                     }
                 } else {
                     isThreeFingerTapCheck = false
+                    logGestureDebug("Three-finger tap rejected: pointer count changed")
                 }
             } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (isThreeFingerTapCheck) {
+                    logGestureDebug("Three-finger tap cancelled")
+                }
                 isThreeFingerTapCheck = false
+            }
+        }
+
+        private fun logGestureDebug(message: String) {
+            if (CanvasConfig.DEBUG_LOG_GESTURES) {
+                Logger.d("GestureDebug", message)
             }
         }
 

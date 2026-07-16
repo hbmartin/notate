@@ -475,6 +475,9 @@ class CanvasActivity : AppCompatActivity() {
                 onPalmRejectionChanged = { enabled ->
                     binding.canvasView.setPalmRejectionEnabled(enabled)
                 },
+                onDebugThreeFingerTap = {
+                    binding.canvasView.triggerThreeFingerTapForDebug()
+                },
                 onTwoFingerTapActionChange = { action ->
                     binding.canvasView.setTwoFingerTapAction(action)
                 },

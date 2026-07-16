@@ -78,6 +78,7 @@ object PreferencesManager {
     private const val KEY_DEBUG_SHOW_BOUNDING_BOX = "debug_show_bounding_box"
     private const val KEY_DEBUG_SHOW_REGIONS = "debug_show_regions"
     private const val KEY_DEBUG_ENABLE_PROFILING = "debug_enable_profiling"
+    private const val KEY_DEBUG_LOG_GESTURES = "debug_log_gestures"
 
     private const val KEY_FLOAT_WINDOW_RECT = "float_window_rect"
 
@@ -233,6 +234,15 @@ object PreferencesManager {
         enabled: Boolean,
     ) {
         getPrefs(context).edit().putBoolean(KEY_DEBUG_ENABLE_PROFILING, enabled).apply()
+    }
+
+    fun isDebugGestureLoggingEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_DEBUG_LOG_GESTURES, false)
+
+    fun setDebugGestureLoggingEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_DEBUG_LOG_GESTURES, enabled).apply()
     }
 
     fun isScribbleToEraseEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_SCRIBBLE_TO_ERASE, true)

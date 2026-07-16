@@ -43,6 +43,7 @@ class SettingsSidebarController(
     private val onEditToolbar: () -> Unit,
     private val onGeneratePatterns: (com.alexdremov.notate.util.PatternGenerator.PatternType, Float) -> Unit,
     private val onPalmRejectionChanged: (Boolean) -> Unit,
+    private val onDebugThreeFingerTap: () -> Unit,
     private val onTwoFingerTapActionChange: (com.alexdremov.notate.model.TwoFingerTapAction) -> Unit,
     private val onStylusButtonActionChange: (com.alexdremov.notate.model.StylusButtonAction) -> Unit,
 ) {
@@ -454,6 +455,30 @@ class SettingsSidebarController(
                 com.alexdremov.notate.data.PreferencesManager
                     .setDebugProfilingEnabled(context, isChecked)
             }
+        }
+
+        debugView.findViewById<Switch>(R.id.switch_debug_palm_rejection).apply {
+            isChecked =
+                com.alexdremov.notate.data.PreferencesManager
+                    .isPalmRejectionEnabled(context)
+            setOnCheckedChangeListener { _, isChecked ->
+                com.alexdremov.notate.data.PreferencesManager
+                    .setPalmRejectionEnabled(context, isChecked)
+                onPalmRejectionChanged(isChecked)
+            }
+        }
+
+        debugView.findViewById<Switch>(R.id.switch_debug_gesture_logging).apply {
+            isChecked = CanvasConfig.DEBUG_LOG_GESTURES
+            setOnCheckedChangeListener { _, isChecked ->
+                CanvasConfig.DEBUG_LOG_GESTURES = isChecked
+                com.alexdremov.notate.data.PreferencesManager
+                    .setDebugGestureLoggingEnabled(context, isChecked)
+            }
+        }
+
+        debugView.findViewById<View>(R.id.btn_debug_three_finger_tap).setOnClickListener {
+            onDebugThreeFingerTap()
         }
 
         val spinnerLogLevel: Spinner = debugView.findViewById(R.id.spinner_debug_log_level)
