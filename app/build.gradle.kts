@@ -4,7 +4,6 @@ import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.FileInputStream
 import java.security.MessageDigest
 import java.util.Properties
@@ -34,14 +33,6 @@ abstract class VerifyCanonicalLibcxx : DefaultTask() {
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.serialization")
-    id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.devtools.ksp")
-    id("jacoco")
-}
-
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 android {
@@ -90,8 +81,6 @@ android {
     }
 
     buildFeatures {
-        viewBinding = true
-        compose = true
         buildConfig = true
     }
 
@@ -167,121 +156,16 @@ listOf("Debug" to "debug", "Release" to "release").forEach { (variantName, varia
     tasks.matching { it.name == "package$variantName" }.configureEach { dependsOn(verifyTask) }
 }
 
-tasks.withType<Test> {
-    configure<JacocoTaskExtension> {
-        isIncludeNoLocationClasses = true
-        excludes = listOf("jdk.internal.*")
-    }
-}
-
-tasks.register<JacocoReport>("jacocoTestReport") {
-    dependsOn("testDebugUnitTest")
-    reports {
-        xml.required.set(true)
-        html.required.set(true)
-    }
-
-    val debugTree =
-        fileTree("${project.buildDir}/tmp/kotlin-classes/debug") {
-            exclude(
-                "**/R.class",
-                "**/R$*.class",
-                "**/BuildConfig.*",
-                "**/Manifest*.*",
-                "**/*Test*.*",
-                "android/**/*.*",
-            )
-        }
-    val mainSrc = "${project.projectDir}/src/main/java"
-
-    sourceDirectories.setFrom(files(mainSrc))
-    classDirectories.setFrom(files(debugTree))
-    executionData.setFrom(files("${project.buildDir}/outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec"))
-}
-
 dependencies {
-    implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-process:2.10.0")
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
-    implementation("androidx.activity:activity-compose:1.12.2")
-    implementation(platform("androidx.compose:compose-bom:2026.01.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.navigation:navigation-compose:2.9.6")
-
-    // File System
-    implementation("androidx.documentfile:documentfile:1.1.0")
-
-    // Existing View-based dependencies
-    implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation("com.google.android.material:material:1.13.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
-    implementation("androidx.fragment:fragment-ktx:1.8.9")
-
-    // Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.10.0")
-
-    // Local OCR full-text index
-    implementation(project(":ocr-runtime"))
-    implementation("androidx.room:room-runtime:2.8.4")
-    implementation("androidx.room:room-ktx:2.8.4")
-    ksp("androidx.room:room-compiler:2.8.4")
-
-    // Color Picker
-    implementation("com.github.skydoves:colorpickerview:2.4.0")
-
-    // Onyx SDK
-    implementation("com.onyx.android.sdk:onyxsdk-pen:1.5.4")
+    implementation(project(":core:app-contracts"))
+    implementation(project(":core:document"))
+    implementation(project(":feature:text-recognition"))
+    implementation(project(":feature:pdf"))
+    implementation(project(":feature:sync"))
+    implementation(project(":feature:home"))
+    implementation(project(":feature:canvas"))
     implementation("com.onyx.android.sdk:onyxsdk-base:1.8.5")
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
-
-    // PDF Support
-    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
-    implementation(kotlin("stdlib-jdk8"))
-
-    // Testing
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.16")
-    testImplementation("io.mockk:mockk:1.14.7")
-    testImplementation("com.google.truth:truth:1.4.5")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-    testImplementation("androidx.work:work-testing:2.10.0")
-    testImplementation("androidx.test:core-ktx:1.6.1")
-    testImplementation("org.testcontainers:testcontainers:1.20.6")
-    // XmlPullParser provider for JVM unit tests; dav4jvm excludes it from the production
-    // classpath because Android provides it natively, so we add it back for the test scope.
-    testImplementation("org.ogce:xpp3:1.1.6")
-
-    // Security & Networking
-    implementation("androidx.security:security-crypto:1.1.0")
-    implementation("com.squareup.okhttp3:okhttp:5.3.2")
-    implementation("com.squareup.okhttp3:logging-interceptor:5.3.2")
-    implementation("com.github.bitfireAT:dav4jvm:2.2.1") {
-        exclude(group = "org.ogce", module = "xpp3")
-    }
-
-    // Google Drive
-    implementation("com.google.android.gms:play-services-auth:21.5.0")
-    implementation("com.google.api-client:google-api-client-android:2.8.1")
-    implementation("com.google.apis:google-api-services-drive:v3-rev20251210-2.0.0")
-
-    // Markwon (Markdown Rendering & Editing)
-    implementation("io.noties.markwon:core:4.6.2")
-    implementation("io.noties.markwon:editor:4.6.2")
-    implementation("io.noties.markwon:ext-strikethrough:4.6.2")
-    implementation("io.noties.markwon:ext-tables:4.6.2")
-    implementation("io.noties.markwon:ext-tasklist:4.6.2")
-    implementation("io.noties.markwon:syntax-highlight:4.6.2")
 
     // Vulnerability force fixes
     constraints {

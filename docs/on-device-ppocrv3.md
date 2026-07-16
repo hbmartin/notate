@@ -58,7 +58,7 @@ flowchart TD
 
 The manual and background paths share one process-wide [`PaddleLiteOcrEngine`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/PaddleLiteOcrEngine.kt). A coroutine `Mutex` serializes all calls into the native predictor, so a background job and a manual selection cannot execute inference concurrently.
 
-The complete inference boundary is built as the independently versioned `com.alexdremov.notate:ppocrv3-runtime:1.0.0` Android library. Notate currently consumes the sibling `:ocr-runtime` project so changes can be tested atomically; the module's Maven publication produces the same coordinate for extraction into a separate release repository. The app module owns canvas behavior, indexing, WorkManager, and UI, while the runtime AAR owns model installation, Paddle Lite invocation, native preprocessing/postprocessing, and its native dependencies.
+The complete inference boundary is built as the independently versioned `com.alexdremov.notate:ppocrv3-runtime:1.0.0` Android library. Notate currently consumes the sibling `:ocr-runtime` project so changes can be tested atomically; the module's Maven publication produces the same coordinate for extraction into a separate release repository. `:feature:text-recognition` owns stroke rasterization, indexing, WorkManager, and the public `TextRecognitionFeature` facade. `:feature:canvas` and `:feature:home` consume that facade, while the runtime AAR owns model installation, Paddle Lite invocation, native preprocessing/postprocessing, and native dependencies. The `:app` module only composes these implementations.
 
 ## Source map
 
@@ -68,22 +68,23 @@ The complete inference boundary is built as the independently versioned `com.ale
 | Kotlin OCR contract and data objects | [`OcrModels.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OcrModels.kt) |
 | Model extraction and verification | [`OcrAssetManager.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OcrAssetManager.kt) |
 | Download, resume, verification, and activation | [`OcrModelPackManager.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OcrModelPackManager.kt) |
-| Durable settings download worker | [`OcrModelDownloadWorker.kt`](../app/src/main/java/com/alexdremov/notate/data/worker/OcrModelDownloadWorker.kt) |
+| Public feature facade | [`TextRecognitionFeature.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/TextRecognitionFeature.kt) |
+| Durable settings download worker | [`OcrModelDownloadWorker.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/data/worker/OcrModelDownloadWorker.kt) |
 | Shared inference engine | [`PaddleLiteOcrEngine.kt`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/PaddleLiteOcrEngine.kt) |
-| Stroke rasterization and coordinate mapping | [`StrokeOcrRasterizer.kt`](../app/src/main/java/com/alexdremov/notate/ocr/StrokeOcrRasterizer.kt) |
-| Reading order and converted-text placement | [`OcrConversionPlanner.kt`](../app/src/main/java/com/alexdremov/notate/ocr/OcrConversionPlanner.kt) |
+| Stroke rasterization and coordinate mapping | [`StrokeOcrRasterizer.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/StrokeOcrRasterizer.kt) |
+| Reading order and converted-text placement | [`OcrConversionPlanner.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/OcrConversionPlanner.kt) |
 | Java/JNI bridge | [`OCRPredictorNative.java`](../ocr-runtime/src/main/java/com/alexdremov/notate/ocr/OCRPredictorNative.java), [`native.cpp`](../ocr-runtime/src/main/cpp/native.cpp) |
 | Detector/recognizer orchestration | [`ocr_ppredictor.cpp`](../ocr-runtime/src/main/cpp/ocr_ppredictor.cpp) |
 | DB detector postprocessing | [`ocr_db_post_process.cpp`](../ocr-runtime/src/main/cpp/ocr_db_post_process.cpp) |
 | Crop and recognition preprocessing | [`ocr_crnn_process.cpp`](../ocr-runtime/src/main/cpp/ocr_crnn_process.cpp) |
 | Native build | [`CMakeLists.txt`](../ocr-runtime/src/main/cpp/CMakeLists.txt) |
-| Room schema and DAO | [`OcrIndexDatabase.kt`](../app/src/main/java/com/alexdremov/notate/ocr/index/OcrIndexDatabase.kt), [`OcrIndexDao.kt`](../app/src/main/java/com/alexdremov/notate/ocr/index/OcrIndexDao.kt) |
-| Incremental index writer | [`OcrIndexWriter.kt`](../app/src/main/java/com/alexdremov/notate/ocr/index/OcrIndexWriter.kt) |
-| Query normalization and verification | [`OcrSearchNormalizer.kt`](../app/src/main/java/com/alexdremov/notate/ocr/index/OcrSearchNormalizer.kt), [`OcrSearchRepository.kt`](../app/src/main/java/com/alexdremov/notate/ocr/index/OcrSearchRepository.kt) |
-| WorkManager jobs | [`OcrIndexWorker.kt`](../app/src/main/java/com/alexdremov/notate/data/worker/OcrIndexWorker.kt), [`OcrBackfillWorker.kt`](../app/src/main/java/com/alexdremov/notate/data/worker/OcrBackfillWorker.kt) |
-| Manual selection UI | [`OnyxCanvasView.kt`](../app/src/main/java/com/alexdremov/notate/ui/OnyxCanvasView.kt), [`SelectionActionPopup.kt`](../app/src/main/java/com/alexdremov/notate/ui/dialog/SelectionActionPopup.kt) |
-| Global search UI | [`MainActivity.kt`](../app/src/main/java/com/alexdremov/notate/MainActivity.kt), [`OcrSearchResultsScreen.kt`](../app/src/main/java/com/alexdremov/notate/ui/home/OcrSearchResultsScreen.kt) |
-| Settings | [`SettingsDialog.kt`](../app/src/main/java/com/alexdremov/notate/ui/home/SettingsDialog.kt) |
+| Room schema and DAO | [`OcrIndexDatabase.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/index/OcrIndexDatabase.kt), [`OcrIndexDao.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/index/OcrIndexDao.kt) |
+| Incremental index writer | [`OcrIndexWriter.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/index/OcrIndexWriter.kt) |
+| Query normalization and verification | [`OcrSearchNormalizer.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/index/OcrSearchNormalizer.kt), [`OcrSearchRepository.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/ocr/index/OcrSearchRepository.kt) |
+| WorkManager jobs | [`OcrIndexWorker.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/data/worker/OcrIndexWorker.kt), [`OcrBackfillWorker.kt`](../feature/text-recognition/src/main/java/com/alexdremov/notate/data/worker/OcrBackfillWorker.kt) |
+| Manual selection UI | [`OnyxCanvasView.kt`](../feature/canvas/src/main/java/com/alexdremov/notate/ui/OnyxCanvasView.kt), [`SelectionActionPopup.kt`](../feature/canvas/src/main/java/com/alexdremov/notate/ui/dialog/SelectionActionPopup.kt) |
+| Global search UI | [`MainActivity.kt`](../feature/home/src/main/java/com/alexdremov/notate/MainActivity.kt), [`OcrSearchResultsScreen.kt`](../feature/home/src/main/java/com/alexdremov/notate/ui/home/OcrSearchResultsScreen.kt) |
+| Settings | [`SettingsDialog.kt`](../feature/home/src/main/java/com/alexdremov/notate/ui/home/SettingsDialog.kt) |
 | Packaged versions and checksums | [`MODEL_MANIFEST.json`](../ocr-runtime/src/main/assets/ocr/MODEL_MANIFEST.json) |
 
 ## Android packaging
@@ -300,7 +301,7 @@ When the last client releases a canvas session, `CanvasRepository.saveAndCloseSe
 flush session -> SaveWorker packs .notate container -> OcrIndexWorker reads session directory
 ```
 
-WorkManager only starts the index worker after `SaveWorker` succeeds. The index worker reads the saved file's current modification time, invokes `OcrIndexWriter`, and retries transient failures with linear backoff. After three retry attempts it returns failure.
+WorkManager only starts the index worker after `SaveWorker` succeeds. The index worker reads the saved file's current modification time, invokes `OcrIndexWriter`, and retries transient failures with linear backoff. Every failed pass increments the persistent document `failureCount`; the third failure changes the document to terminal `FAILED` and the worker returns failure.
 
 If background indexing is disabled before the worker executes, the worker returns success without indexing. A shared session that is not at its final client release uses the repository's direct save path and does not enqueue the chain at that moment; a later final close or charging/idle backfill catches it.
 
@@ -318,11 +319,11 @@ It refreshes each configured project's existing file index, deduplicates notes b
 - no OCR document exists at the path
 - the note modification time changed
 - the OCR model/index version changed
-- the document status is not `INDEXED`
+- the document status is neither `INDEXED` nor `FAILED`
 
 Each invocation processes at most three notes. If more remain, it returns `Result.retry()` and uses a 30-second linear backoff while retaining the charging/idle constraints. Unique work uses `KEEP` normally and `REPLACE` for an explicit rebuild.
 
-An unreadable note is logged and skipped for that pass. A failed note in a final batch is attempted again the next time backfill is scheduled, such as the next home-screen initialization or explicit rebuild.
+An unreadable note is logged and its persistent failure count advances. An unchanged document in terminal `FAILED` state is skipped by later backfills, preventing poison notes from retrying forever. It becomes eligible again when its modification time or model/index version changes; an explicit rebuild also clears the derived database and retries it from a clean state.
 
 ### Delete, rename, move, and sync
 
@@ -343,7 +344,7 @@ The model/index version is:
 <model id>:<preprocessing version>:<dictionary version>
 ```
 
-The current Kotlin value is `ppocrv3-zh-en-mobile:1:ppocr_keys_v1`. It is stored on the document and included in every filename or region hash. Changing any component invalidates prior hashes and makes backfill reprocess the note.
+The current Kotlin value is `ppocrv3-zh-en-mobile:2:ppocr_keys_v1`. It is stored on the document and included in every filename or region hash. Changing any component invalidates prior hashes and makes backfill reprocess the note.
 
 Replacing model bytes without changing `OcrModelInfo.id`, `preprocessingVersion`, or `dictionaryVersion` will not invalidate existing region hashes. Any model, dictionary, threshold, rasterization, or coordinate behavior change that can affect output must bump the relevant version.
 
@@ -396,8 +397,11 @@ The document moves through these status values:
 | `INDEXING` | A pass has started. |
 | `INDEXED` | Every live region was decoded and indexed successfully. |
 | `STALE` | At least one changed region failed; previous searchable rows were retained. |
+| `FAILED` | Three consecutive failures occurred for the same document content and model version; automatic backfill pauses until an input/version change or rebuild. |
 
 If region decoding or OCR throws, `OcrIndexWriter` does not call `replaceRegion()` for that region. The previous rows remain searchable, the stale count increments, and the final document row records an explanatory error message.
+
+`failureCount` is preserved only while the document modification time and model/index version are unchanged. Successful indexing resets it to zero. This makes `FAILED` terminal for a specific bad input, not a permanent ban on the note.
 
 Removed-region cleanup only runs when the entire pass has no stale regions. This avoids deleting data based on a partial or corrupt session view. The tradeoff is that a stale document can temporarily retain search hits for content that has been removed from the note.
 
@@ -405,7 +409,7 @@ Removed-region cleanup only runs when the entire pass has no stale regions. This
 
 The database is named `notate_ocr_index.db` and is stored in the application's normal private database directory. It is not part of a `.notate` file and is not synchronized.
 
-The current Room schema version is 1 and schema export is disabled. No fallback-to-destructive-migration option is configured. A future schema change must therefore supply a Room migration or deliberately introduce a reviewed destructive-rebuild strategy for this reproducible index.
+The current Room schema version is 2. Schema export is enabled and committed under [`feature/text-recognition/schemas`](../feature/text-recognition/schemas). The database uses `fallbackToDestructiveMigration(dropAllTables = true)` because it is a reproducible, device-local index rather than source document data; after an incompatible schema upgrade, charging/idle backfill rebuilds it from `.notate` files.
 
 ### `ocr_documents`
 
@@ -418,6 +422,7 @@ One row per note:
 - model/index version
 - status and optional error
 - last indexing time
+- consecutive failure count for the current content/model version
 
 The path is unique and project/status lookups are indexed.
 
@@ -538,7 +543,7 @@ There is no hardware-specific branch for the Snapdragon 750G. Compatibility come
 - Degenerate raster bounds: “Selection could not be rendered”.
 - No block at confidence 0.5 or higher: “No text recognized”.
 - Native/model failure: logged under `PaddleOCR`, followed by “Text recognition is unavailable”.
-- Background failure: old rows remain when possible and the document becomes stale.
+- Background failure: old rows remain when possible; the document becomes `STALE`, then terminal `FAILED` after three consecutive failures for unchanged input.
 
 ### Useful log tags
 
@@ -597,7 +602,8 @@ Do not change only the model-pack descriptor and checksum: without an `OcrModelI
 Run the repository checks with:
 
 ```bash
-./gradlew :app:testDebugUnitTest
+./gradlew testDebugUnitTest
+./gradlew jacocoTestReport
 ./gradlew :ocr-runtime:assembleRelease
 ./gradlew :app:assembleDebug
 ./gradlew :app:lintDebug
@@ -622,10 +628,10 @@ OCR-focused tests cover:
 
 The tests are in:
 
-- [`OcrGeometryTest.kt`](../app/src/test/java/com/alexdremov/notate/ocr/OcrGeometryTest.kt)
-- [`OcrSearchNormalizerTest.kt`](../app/src/test/java/com/alexdremov/notate/ocr/OcrSearchNormalizerTest.kt)
-- [`OcrIndexWriterTest.kt`](../app/src/test/java/com/alexdremov/notate/ocr/OcrIndexWriterTest.kt)
-- [`CanvasRepositoryWorkTest.kt`](../app/src/test/java/com/alexdremov/notate/data/CanvasRepositoryWorkTest.kt)
+- [`OcrGeometryTest.kt`](../feature/text-recognition/src/test/java/com/alexdremov/notate/ocr/OcrGeometryTest.kt)
+- [`OcrSearchNormalizerTest.kt`](../feature/text-recognition/src/test/java/com/alexdremov/notate/ocr/OcrSearchNormalizerTest.kt)
+- [`OcrIndexWriterTest.kt`](../feature/text-recognition/src/test/java/com/alexdremov/notate/ocr/OcrIndexWriterTest.kt)
+- [`CanvasRepositoryWorkTest.kt`](../feature/text-recognition/src/test/java/com/alexdremov/notate/data/CanvasRepositoryWorkTest.kt)
 - [`OcrModelPackInstallerTest.kt`](../ocr-runtime/src/test/java/com/alexdremov/notate/ocr/OcrModelPackInstallerTest.kt)
 
 ## Physical-device release validation

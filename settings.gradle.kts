@@ -23,3 +23,11 @@ dependencyResolutionManagement {
 rootProject.name = "Notate"
 include(":app")
 include(":ocr-runtime")
+include(":core:app-contracts")
+include(":core:document")
+include(":core:rendering")
+include(":feature:text-recognition")
+include(":feature:pdf")
+include(":feature:sync")
+include(":feature:home")
+include(":feature:canvas")
