@@ -1,6 +1,35 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.FileInputStream
+import java.security.MessageDigest
 import java.util.Properties
+
+abstract class VerifyCanonicalLibcxx : DefaultTask() {
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val expectedLibrary: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val packagedLibrary: RegularFileProperty
+
+    @TaskAction
+    fun verify() {
+        val expected = expectedLibrary.get().asFile
+        val packaged = packagedLibrary.get().asFile
+        val digest = MessageDigest.getInstance("SHA-256")
+        fun sha256(file: File): String = digest.digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+
+        check(sha256(packaged) == sha256(expected)) {
+            "The packaged libc++_shared.so does not match the canonical NDK runtime"
+        }
+    }
+}
 
 plugins {
     id("com.android.application")
@@ -9,6 +38,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
     id("jacoco")
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 android {
@@ -102,6 +135,36 @@ android {
             excludes += "META-INF/INDEX.LIST"
         }
     }
+}
+
+val canonicalLibcxx =
+    fileTree(android.ndkDirectory.resolve("toolchains/llvm/prebuilt")) {
+        include("*/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so")
+    }.singleFile
+val canonicalJniRoot = layout.buildDirectory.dir("generated/canonicalJniLibs")
+val prepareCanonicalLibcxx by
+    tasks.registering(Copy::class) {
+        from(canonicalLibcxx)
+        into(canonicalJniRoot.map { it.dir("arm64-v8a") })
+    }
+
+android.sourceSets.getByName("main").jniLibs.srcDir(canonicalJniRoot.get().asFile)
+tasks.matching { it.name.matches(Regex("merge(Debug|Release)JniLibFolders")) }.configureEach {
+    dependsOn(prepareCanonicalLibcxx)
+}
+
+listOf("Debug" to "debug", "Release" to "release").forEach { (variantName, variantDirectory) ->
+    val verifyTask =
+        tasks.register<VerifyCanonicalLibcxx>("verify${variantName}CanonicalLibcxx") {
+            dependsOn("merge${variantName}NativeLibs")
+            expectedLibrary.fileValue(canonicalLibcxx)
+            packagedLibrary.set(
+                layout.buildDirectory.file(
+                    "intermediates/merged_native_libs/$variantDirectory/merge${variantName}NativeLibs/out/lib/arm64-v8a/libc++_shared.so",
+                ),
+            )
+        }
+    tasks.matching { it.name == "package$variantName" }.configureEach { dependsOn(verifyTask) }
 }
 
 tasks.withType<Test> {

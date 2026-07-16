@@ -4,7 +4,7 @@ import android.graphics.RectF
 
 data class OcrModelInfo(
     val id: String = "ppocrv3-zh-en-mobile",
-    val preprocessingVersion: Int = 1,
+    val preprocessingVersion: Int = 2,
     val dictionaryVersion: String = "ppocr_keys_v1",
 ) {
     val indexVersion: String = "$id:$preprocessingVersion:$dictionaryVersion"

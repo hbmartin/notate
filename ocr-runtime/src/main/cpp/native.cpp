@@ -4,7 +4,9 @@
 
 #include "native.h"
 #include "ocr_ppredictor.h"
+#include "preprocess.h"
 #include <algorithm>
+#include <memory>
 #include <paddle_api.h>
 #include <string>
 
@@ -24,10 +26,18 @@ Java_com_alexdremov_notate_ocr_OCRPredictorNative_init(
   conf.use_opencl = j_use_opencl;
   conf.thread_num = thread_num;
   conf.mode = str_to_cpu_mode(cpu_mode);
-  ppredictor::OCR_PPredictor *orc_predictor =
-      new ppredictor::OCR_PPredictor{conf};
-  orc_predictor->init_from_file(det_model_path, rec_model_path, cls_model_path);
-  return reinterpret_cast<jlong>(orc_predictor);
+  try {
+    auto orc_predictor = std::make_unique<ppredictor::OCR_PPredictor>(conf);
+    orc_predictor->init_from_file(det_model_path, rec_model_path,
+                                  cls_model_path);
+    return reinterpret_cast<jlong>(orc_predictor.release());
+  } catch (const std::exception &error) {
+    LOGE("Native OCR initialization failed: %s", error.what());
+    return 0;
+  } catch (...) {
+    LOGE("Native OCR initialization failed with an unknown exception");
+    return 0;
+  }
 }
 
 /**
@@ -39,15 +49,16 @@ static paddle::lite_api::PowerMode
 str_to_cpu_mode(const std::string &cpu_mode) {
   static std::map<std::string, paddle::lite_api::PowerMode> cpu_mode_map{
       {"LITE_POWER_HIGH", paddle::lite_api::LITE_POWER_HIGH},
-      {"LITE_POWER_LOW", paddle::lite_api::LITE_POWER_HIGH},
+      {"LITE_POWER_LOW", paddle::lite_api::LITE_POWER_LOW},
       {"LITE_POWER_FULL", paddle::lite_api::LITE_POWER_FULL},
       {"LITE_POWER_NO_BIND", paddle::lite_api::LITE_POWER_NO_BIND},
       {"LITE_POWER_RAND_HIGH", paddle::lite_api::LITE_POWER_RAND_HIGH},
       {"LITE_POWER_RAND_LOW", paddle::lite_api::LITE_POWER_RAND_LOW}};
   std::string upper_key;
   upper_key.resize(cpu_mode.size());
-  std::transform(cpu_mode.cbegin(), cpu_mode.cend(), upper_key.begin(),
-                 [](unsigned char c) { return static_cast<char>(::toupper(c)); });
+  std::transform(
+      cpu_mode.cbegin(), cpu_mode.cend(), upper_key.begin(),
+      [](unsigned char c) { return static_cast<char>(::toupper(c)); });
   auto index = cpu_mode_map.find(upper_key.c_str());
   if (index == cpu_mode_map.end()) {
     LOGE("cpu_mode not found %s", upper_key.c_str());
@@ -67,50 +78,59 @@ Java_com_alexdremov_notate_ocr_OCRPredictorNative_forward(
     return cpp_array_to_jfloatarray(env, nullptr, 0);
   }
 
-  cv::Mat origin = bitmap_to_cv_mat(env, original_image);
-  if (origin.size == 0) {
-    LOGE("origin bitmap cannot convert to CV Mat");
+  try {
+    cv::Mat origin = bitmap_to_cv_mat(env, original_image);
+    if (origin.empty()) {
+      LOGE("origin bitmap cannot convert to CV Mat");
+      return cpp_array_to_jfloatarray(env, nullptr, 0);
+    }
+
+    int max_size_len = j_max_size_len;
+    int run_det = j_run_det;
+    int run_cls = j_run_cls;
+    int run_rec = j_run_rec;
+
+    ppredictor::OCR_PPredictor *ppredictor =
+        (ppredictor::OCR_PPredictor *)java_pointer;
+    std::vector<int64_t> dims_arr;
+    std::vector<ppredictor::OCRPredictResult> results =
+        ppredictor->infer_ocr(origin, max_size_len, run_det, run_cls, run_rec);
+    LOGI("infer_ocr finished with boxes %ld", results.size());
+
+    // 这里将std::vector<ppredictor::OCRPredictResult> 序列化成
+    // float数组，传输到java层再反序列化
+    std::vector<float> float_arr;
+    for (const ppredictor::OCRPredictResult &r : results) {
+      float_arr.push_back(r.points.size());
+      float_arr.push_back(r.word_index.size());
+      float_arr.push_back(r.score);
+      // add det point
+      for (const std::vector<int> &point : r.points) {
+        float_arr.push_back(point.at(0));
+        float_arr.push_back(point.at(1));
+      }
+      // add rec word idx
+      for (int index : r.word_index) {
+        float_arr.push_back(index);
+      }
+      // add cls result
+      float_arr.push_back(r.cls_label);
+      float_arr.push_back(r.cls_score);
+    }
+    return cpp_array_to_jfloatarray(env, float_arr.data(), float_arr.size());
+  } catch (const std::exception &error) {
+    LOGE("Native OCR failed: %s", error.what());
+    return cpp_array_to_jfloatarray(env, nullptr, 0);
+  } catch (...) {
+    LOGE("Native OCR failed with an unknown exception");
     return cpp_array_to_jfloatarray(env, nullptr, 0);
   }
-
-  int max_size_len = j_max_size_len;
-  int run_det = j_run_det;
-  int run_cls = j_run_cls;
-  int run_rec = j_run_rec;
-
-  ppredictor::OCR_PPredictor *ppredictor =
-      (ppredictor::OCR_PPredictor *)java_pointer;
-  std::vector<int64_t> dims_arr;
-  std::vector<ppredictor::OCRPredictResult> results =
-      ppredictor->infer_ocr(origin, max_size_len, run_det, run_cls, run_rec);
-  LOGI("infer_ocr finished with boxes %ld", results.size());
-
-  // 这里将std::vector<ppredictor::OCRPredictResult> 序列化成
-  // float数组，传输到java层再反序列化
-  std::vector<float> float_arr;
-  for (const ppredictor::OCRPredictResult &r : results) {
-    float_arr.push_back(r.points.size());
-    float_arr.push_back(r.word_index.size());
-    float_arr.push_back(r.score);
-    // add det point
-    for (const std::vector<int> &point : r.points) {
-      float_arr.push_back(point.at(0));
-      float_arr.push_back(point.at(1));
-    }
-    // add rec word idx
-    for (int index : r.word_index) {
-      float_arr.push_back(index);
-    }
-    // add cls result
-    float_arr.push_back(r.cls_label);
-    float_arr.push_back(r.cls_score);
-  }
-  return cpp_array_to_jfloatarray(env, float_arr.data(), float_arr.size());
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_alexdremov_notate_ocr_OCRPredictorNative_release(
-    JNIEnv *env, jobject thiz, jlong java_pointer) {
+Java_com_alexdremov_notate_ocr_OCRPredictorNative_release(JNIEnv *env,
+                                                          jobject thiz,
+                                                          jlong java_pointer) {
   if (java_pointer == 0) {
     LOGE("JAVA pointer is NULL");
     return;

@@ -17,7 +17,7 @@ data class OcrSearchResult(
     val bounds: RectF?,
 )
 
-class OcrSearchRepository private constructor(
+class OcrSearchRepository internal constructor(
     private val dao: OcrIndexDao,
 ) {
     val indexedDocumentCount: Flow<Int> = dao.indexedDocumentCount()
@@ -36,13 +36,14 @@ class OcrSearchRepository private constructor(
             .search(ftsQuery, limit * 2)
             .asSequence()
             .filter { row ->
-                val documentName = OcrSearchNormalizer.normalize(row.documentName)
-                if (OcrSearchNormalizer.containsCjk(normalizedQuery)) {
-                    row.normalizedText.contains(normalizedQuery) || documentName.contains(normalizedQuery)
-                } else {
-                    val queryTokens = OcrSearchNormalizer.tokens(normalizedQuery)
-                    val candidateTokens = OcrSearchNormalizer.tokens(row.normalizedText + " " + documentName)
-                    queryTokens.all { queryToken -> candidateTokens.any { it.startsWith(queryToken) } }
+                val candidate = OcrSearchNormalizer.normalize(row.normalizedText + " " + row.documentName)
+                val candidateTokens = OcrSearchNormalizer.tokens(candidate)
+                OcrSearchNormalizer.querySegments(normalizedQuery).all { segment ->
+                    if (segment.isCjk) {
+                        candidate.contains(segment.value)
+                    } else {
+                        candidateTokens.any { it.startsWith(segment.value) }
+                    }
                 }
             }.distinctBy { Triple(it.documentId, it.source, it.text) }
             .take(limit)

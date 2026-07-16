@@ -117,11 +117,12 @@ class ProjectRepository(
     }
 
     suspend fun deleteItem(path: String): Boolean {
+        val dao = com.alexdremov.notate.ocr.index.OcrIndexDatabase.get(context).dao()
+        val indexedDocuments = dao.getAllDocuments().filter { PathRelations.contains(path, it.path) }
         val success = getProvider(path).deleteItem(path)
         if (success) {
             indexManager.updateIndex(getProvider(path))
-            val dao = com.alexdremov.notate.ocr.index.OcrIndexDatabase.get(context).dao()
-            dao.getDocumentByPath(path)?.let { document ->
+            indexedDocuments.forEach { document ->
                 dao.deleteDocumentBlocks(document.documentId)
                 dao.deleteDocument(document.documentId)
             }
@@ -133,16 +134,18 @@ class ProjectRepository(
         path: String,
         newName: String,
     ): Boolean {
+        val dao = com.alexdremov.notate.ocr.index.OcrIndexDatabase.get(context).dao()
+        val indexedDocuments = dao.getAllDocuments().filter { PathRelations.contains(path, it.path) }
         val success = getProvider(path).renameItem(path, newName)
         if (success) {
             indexManager.updateIndex(getProvider(path))
-            val dao = com.alexdremov.notate.ocr.index.OcrIndexDatabase.get(context).dao()
-            dao.getDocumentByPath(path)?.let { document ->
-                val moved = getAllIndexedFiles().firstOrNull { it.uuid == document.documentId }
-                if (moved != null) {
-                    dao.upsertDocument(document.copy(path = moved.path, name = moved.name, lastModified = moved.lastModified))
-                }
+            // A folder rename changes every descendant path, and UUID-less legacy notes
+            // cannot be reconciled safely. Remove the old rows and rebuild from the new paths.
+            indexedDocuments.forEach { document ->
+                dao.deleteDocumentBlocks(document.documentId)
+                dao.deleteDocument(document.documentId)
             }
+            com.alexdremov.notate.data.worker.OcrBackfillScheduler.schedule(context, replace = true)
         }
         return success
     }

@@ -894,20 +894,11 @@ class OnyxCanvasView
             try {
                 if (!ensureOcrModelsInstalled()) return
                 android.widget.Toast.makeText(context, "Recognizing text…", android.widget.Toast.LENGTH_SHORT).show()
-                val raster =
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                        com.alexdremov.notate.ocr.StrokeOcrRasterizer.render(strokes)
-                    }
-                if (raster == null) {
-                    android.widget.Toast.makeText(context, "Selection could not be rendered", android.widget.Toast.LENGTH_SHORT).show()
-                    return
-                }
                 val blocks =
-                    try {
-                        com.alexdremov.notate.ocr.PaddleOcrProvider.get(context).recognize(raster.bitmap)
-                    } finally {
-                        raster.bitmap.recycle()
-                    }
+                    com.alexdremov.notate.ocr.index.OcrTiledRecognizer.recognize(
+                        strokes,
+                        com.alexdremov.notate.ocr.PaddleOcrProvider.get(context),
+                    )
                 val recognizedText = com.alexdremov.notate.ocr.OcrConversionPlanner.orderedText(blocks)
                 if (recognizedText.isEmpty()) {
                     android.widget.Toast.makeText(context, "No text recognized", android.widget.Toast.LENGTH_SHORT).show()
@@ -941,6 +932,8 @@ class OnyxCanvasView
                         }
                     }
                 }.show()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (error: Throwable) {
                 com.alexdremov.notate.util.Logger.e("PaddleOCR", "Text recognition failed", error, showToUser = true)
                 android.widget.Toast.makeText(context, "Text recognition is unavailable", android.widget.Toast.LENGTH_LONG).show()

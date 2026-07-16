@@ -7,6 +7,7 @@ import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.alexdremov.notate.data.CanvasData
 import com.alexdremov.notate.data.CanvasSerializer
+import com.alexdremov.notate.data.PathRelations
 import com.alexdremov.notate.data.PreferencesManager
 import com.alexdremov.notate.data.RegionProto
 import com.alexdremov.notate.model.Stroke
@@ -15,13 +16,14 @@ import com.alexdremov.notate.ocr.OcrModelInfo
 import com.alexdremov.notate.ocr.OcrTextSource
 import com.alexdremov.notate.ocr.PaddleOcrEngine
 import com.alexdremov.notate.ocr.PaddleOcrProvider
-import com.alexdremov.notate.ocr.StrokeOcrRasterizer
 import com.alexdremov.notate.util.Logger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.protobuf.ProtoBuf
 import java.io.File
 import java.security.MessageDigest
-import kotlin.math.floor
 
 data class OcrIndexOutcome(
     val documentId: String,
@@ -42,7 +44,20 @@ class OcrIndexWriter(
         sessionDir: File,
         targetPath: String,
         lastModified: Long = System.currentTimeMillis(),
+        shouldStop: () -> Boolean = { false },
+    ): OcrIndexOutcome =
+        OcrIndexCoordinator.withDocumentLock(targetPath) {
+            indexSessionLocked(sessionDir, targetPath, lastModified, shouldStop)
+        }
+
+    @OptIn(ExperimentalSerializationApi::class)
+    private suspend fun indexSessionLocked(
+        sessionDir: File,
+        targetPath: String,
+        lastModified: Long,
+        shouldStop: () -> Boolean,
     ): OcrIndexOutcome {
+        if (shouldStop()) throw CancellationException("OCR indexing stopped")
         val manifestFile = File(sessionDir, "manifest.bin")
         check(manifestFile.isFile) { "Missing canvas manifest" }
         val manifest = ProtoBuf.decodeFromByteArray(CanvasData.serializer(), manifestFile.readBytes())
@@ -50,9 +65,16 @@ class OcrIndexWriter(
         val name = noteName(targetPath)
         val projectId = projectIdFor(targetPath)
         val modelVersion = engine.modelInfo.indexVersion
+        dao.getDocumentByPath(targetPath)?.let { current ->
+            if (current.lastModified > lastModified && current.modelVersion == modelVersion) {
+                return OcrIndexOutcome(documentId, 0, dao.getRegionStateIds(current.documentId).size, 0)
+            }
+        }
         val previous = dao.getDocument(documentId)
+        val inheritedFailures =
+            if (previous?.lastModified == lastModified && previous.modelVersion == modelVersion) previous.failureCount else 0
 
-        dao.upsertDocument(
+        dao.upsertDocumentSafely(
             OcrDocumentEntity(
                 documentId = documentId,
                 projectId = projectId,
@@ -62,6 +84,7 @@ class OcrIndexWriter(
                 modelVersion = modelVersion,
                 status = STATUS_INDEXING,
                 indexedAt = previous?.indexedAt ?: 0L,
+                failureCount = inheritedFailures,
             ),
         )
 
@@ -75,9 +98,15 @@ class OcrIndexWriter(
             .orEmpty()
             .sortedBy(File::getName)
             .forEach { file ->
+                if (shouldStop()) throw CancellationException("OCR indexing stopped")
                 val regionId = file.nameWithoutExtension
                 liveRegionIds += regionId
-                val bytes = file.readBytes()
+                val bytes = runCatching { file.readBytes() }
+                    .getOrElse { error ->
+                        stale++
+                        Logger.e("OcrIndex", "Unable to read $regionId", error)
+                        return@forEach
+                    }
                 val regionHash = sha256(bytes, modelVersion.toByteArray())
                 if (dao.getRegionHash(documentId, regionId) == regionHash) {
                     unchanged++
@@ -98,14 +127,16 @@ class OcrIndexWriter(
                         Logger.e("OcrIndex", "OCR failed for $regionId; retaining previous rows", error)
                         return@forEach
                     }
-                dao.replaceRegion(documentId, regionId, blocks)
+                if (shouldStop()) throw CancellationException("OCR indexing stopped")
+                dao.replaceRegion(documentId, regionId, regionHash, blocks)
                 indexed++
             }
 
+        if (shouldStop()) throw CancellationException("OCR indexing stopped")
         if (stale == 0) {
-            (dao.getRegionIds(documentId).toSet() - liveRegionIds).forEach { dao.deleteRegion(documentId, it) }
+            (dao.getRegionStateIds(documentId).toSet() - liveRegionIds).forEach { dao.deleteRegion(documentId, it) }
         }
-        dao.upsertDocument(
+        dao.upsertDocumentSafely(
             OcrDocumentEntity(
                 documentId = documentId,
                 projectId = projectId,
@@ -116,6 +147,7 @@ class OcrIndexWriter(
                 status = if (stale == 0) STATUS_INDEXED else STATUS_STALE,
                 errorMessage = if (stale == 0) null else "$stale region(s) retained from the previous index",
                 indexedAt = System.currentTimeMillis(),
+                failureCount = if (stale == 0) 0 else inheritedFailures,
             ),
         )
         return OcrIndexOutcome(documentId, indexed, unchanged, stale)
@@ -131,6 +163,7 @@ class OcrIndexWriter(
         dao.replaceRegion(
             documentId,
             FILENAME_REGION,
+            hash,
             listOf(block(documentId, FILENAME_REGION, hash, OcrTextSource.FILENAME, name, 1f, null, 0)),
         )
     }
@@ -161,7 +194,7 @@ class OcrIndexWriter(
             check(engine.isAvailable()) { "PP-OCRv3 runtime is unavailable" }
             val strokes = region.strokes.map(CanvasSerializer::fromStrokeData)
             try {
-                val recognized = recognizeTiles(strokes)
+                val recognized = OcrTiledRecognizer.recognize(strokes, engine)
                 recognized.forEachIndexed { index, recognizedBlock ->
                     output += block(
                         documentId,
@@ -179,34 +212,6 @@ class OcrIndexWriter(
             }
         }
         return output
-    }
-
-    private suspend fun recognizeTiles(strokes: List<Stroke>): List<OcrBlock> {
-        if (strokes.isEmpty()) return emptyList()
-        val contentBounds = RectF(strokes.first().bounds)
-        strokes.drop(1).forEach { contentBounds.union(it.bounds) }
-        val firstX = floor(contentBounds.left / TILE_STRIDE).toInt() * TILE_STRIDE
-        val firstY = floor(contentBounds.top / TILE_STRIDE).toInt() * TILE_STRIDE
-        val results = mutableListOf<OcrBlock>()
-        var y = firstY
-        while (y < contentBounds.bottom) {
-            var x = firstX
-            while (x < contentBounds.right) {
-                val tile = RectF(x, y, x + TILE_SIZE, y + TILE_SIZE)
-                if (strokes.any { RectF.intersects(it.bounds, tile) }) {
-                    StrokeOcrRasterizer.render(strokes, tile)?.let { raster ->
-                        try {
-                            results += engine.recognize(raster.bitmap).map(raster::toWorld)
-                        } finally {
-                            raster.bitmap.recycle()
-                        }
-                    }
-                }
-                x += TILE_STRIDE
-            }
-            y += TILE_STRIDE
-        }
-        return OcrBlockDeduplicator.deduplicate(results)
     }
 
     private fun block(
@@ -240,17 +245,7 @@ class OcrIndexWriter(
 
     private fun projectIdFor(path: String): String? {
         val projects = PreferencesManager.getProjects(appContext)
-        projects.filter { path.startsWith(it.uri) }.maxByOrNull { it.uri.length }?.let { return it.id }
-        if (!path.startsWith("content://")) return null
-        val documentUri = Uri.parse(path)
-        val documentId = runCatching { DocumentsContract.getDocumentId(documentUri) }.getOrNull() ?: return null
-        return projects.firstOrNull { project ->
-            runCatching {
-                val projectUri = Uri.parse(project.uri)
-                projectUri.authority == documentUri.authority &&
-                    documentId.startsWith(DocumentsContract.getTreeDocumentId(projectUri))
-            }.getOrDefault(false)
-        }?.id
+        return projects.filter { PathRelations.contains(it.uri, path) }.maxByOrNull { it.uri.length }?.id
     }
 
     private fun noteName(path: String): String {
@@ -273,27 +268,73 @@ class OcrIndexWriter(
     companion object {
         private val REGION_FILE = Regex("r_-?\\d+_-?\\d+\\.bin")
         private const val FILENAME_REGION = "__filename__"
-        private const val TILE_SIZE = 960f
-        private const val TILE_OVERLAP = 96f
-        private const val TILE_STRIDE = TILE_SIZE - TILE_OVERLAP
         const val STATUS_INDEXING = "INDEXING"
         const val STATUS_INDEXED = "INDEXED"
         const val STATUS_STALE = "STALE"
+        const val STATUS_FAILED = "FAILED"
     }
+}
+
+private object OcrIndexCoordinator {
+    private val locks = Array(64) { Mutex() }
+
+    suspend fun <T> withDocumentLock(
+        path: String,
+        block: suspend () -> T,
+    ): T = locks[Math.floorMod(path.hashCode(), locks.size)].withLock { block() }
 }
 
 object OcrBlockDeduplicator {
     fun deduplicate(blocks: List<OcrBlock>): List<OcrBlock> {
-        val ordered = blocks.sortedByDescending(OcrBlock::confidence)
-        val kept = mutableListOf<OcrBlock>()
+        val ordered = blocks.sortedByDescending(OcrBlock::confidence).map { it to OcrSearchNormalizer.normalize(it.text) }
+        val kept = mutableListOf<Pair<OcrBlock, String>>()
         ordered.forEach { candidate ->
-            val normalized = OcrSearchNormalizer.normalize(candidate.text)
             val duplicate = kept.any { existing ->
-                OcrSearchNormalizer.normalize(existing.text) == normalized && intersectionOverUnion(existing.bounds, candidate.bounds) >= 0.35f
+                nearEquivalent(existing.second, candidate.second) &&
+                    intersectionOverUnion(existing.first.bounds, candidate.first.bounds) >= 0.35f
             }
             if (!duplicate) kept += candidate
         }
-        return kept.sortedWith(compareBy<OcrBlock> { it.bounds.top }.thenBy { it.bounds.left })
+        return kept.map { it.first }.sortedWith(compareBy<OcrBlock> { it.bounds.top }.thenBy { it.bounds.left })
+    }
+
+    private fun nearEquivalent(
+        first: String,
+        second: String,
+    ): Boolean {
+        if (first == second) return true
+        val firstPoints = first.codePoints().toArray()
+        val secondPoints = second.codePoints().toArray()
+        val longest = maxOf(firstPoints.size, secondPoints.size)
+        if (longest < 4) return false
+        val allowed = maxOf(1, longest / 5)
+        if (kotlin.math.abs(firstPoints.size - secondPoints.size) > allowed) return false
+        return editDistanceAtMost(firstPoints, secondPoints, allowed)
+    }
+
+    private fun editDistanceAtMost(
+        first: IntArray,
+        second: IntArray,
+        limit: Int,
+    ): Boolean {
+        var previous = IntArray(second.size + 1) { it }
+        first.forEachIndexed { firstIndex, firstCodePoint ->
+            val current = IntArray(second.size + 1)
+            current[0] = firstIndex + 1
+            var rowMinimum = current[0]
+            second.forEachIndexed { secondIndex, secondCodePoint ->
+                current[secondIndex + 1] =
+                    minOf(
+                        current[secondIndex] + 1,
+                        previous[secondIndex + 1] + 1,
+                        previous[secondIndex] + if (firstCodePoint == secondCodePoint) 0 else 1,
+                    )
+                rowMinimum = minOf(rowMinimum, current[secondIndex + 1])
+            }
+            if (rowMinimum > limit) return false
+            previous = current
+        }
+        return previous.last() <= limit
     }
 
     internal fun intersectionOverUnion(first: RectF, second: RectF): Float {

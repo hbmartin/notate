@@ -20,11 +20,8 @@ class PaddleLiteOcrEngine(
     private val mutex = Mutex()
     private var predictor: OCRPredictorNative? = null
     private var labels: List<String>? = null
-    @Volatile private var unavailableReason: Throwable? = null
-
     override fun isAvailable(): Boolean =
         Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } &&
-            unavailableReason == null &&
             OcrModelPackManager.get(appContext).isInstalled()
 
     override suspend fun recognize(bitmap: Bitmap): List<OcrBlock> =
@@ -82,7 +79,6 @@ class PaddleLiteOcrEngine(
                 OCRPredictorNative(config).also { predictor = it }
             }
         } catch (error: Throwable) {
-            unavailableReason = error
             Log.e("PaddleOCR", "Failed to initialize PP-OCRv3", error)
             throw error
         }

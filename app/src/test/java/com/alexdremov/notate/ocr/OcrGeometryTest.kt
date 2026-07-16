@@ -35,6 +35,20 @@ class OcrGeometryTest {
     }
 
     @Test
+    fun overlappingTileResultsDeduplicateMinorOcrDifferences() {
+        val result =
+            OcrBlockDeduplicator.deduplicate(
+                listOf(
+                    block("hello", 0.9f, RectF(10f, 10f, 100f, 40f)),
+                    block("hell0", 0.7f, RectF(15f, 10f, 105f, 40f)),
+                ),
+            )
+
+        assertThat(result).hasSize(1)
+        assertThat(result.single().text).isEqualTo("hello")
+    }
+
+    @Test
     fun lineOrderingIsTopThenLeft() {
         val text = OcrConversionPlanner.orderedText(
             listOf(

@@ -27,13 +27,13 @@ struct OCR_Config {
 struct OCRPredictResult {
   std::vector<int> word_index;
   std::vector<std::vector<int>> points;
-  float score;
-  float cls_score;
+  float score = 0.0f;
+  float cls_score = 0.0f;
   int cls_label = -1;
 };
 
 struct ClsPredictResult {
-  float cls_score;
+  float cls_score = 0.0f;
   int cls_label = -1;
   cv::Mat img;
 };

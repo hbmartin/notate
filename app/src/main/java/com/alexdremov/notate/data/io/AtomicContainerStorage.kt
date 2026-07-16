@@ -5,8 +5,14 @@ import android.net.Uri
 import com.alexdremov.notate.util.Logger
 import com.alexdremov.notate.util.ZipUtils
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.util.UUID
 
 /**
  * Handles atomic packing and unpacking of Container files (ZIPs).
@@ -45,7 +51,13 @@ class AtomicContainerStorage(
         sourceDir: File,
         targetPath: String,
     ) {
-        val tempZip = File(context.cacheDir, "save_${System.currentTimeMillis()}.zip.tmp")
+        val tempZip =
+            if (targetPath.startsWith("content://")) {
+                File(context.cacheDir, "save_${UUID.randomUUID()}.zip.tmp")
+            } else {
+                val target = File(targetPath)
+                File(target.parentFile ?: context.cacheDir, ".${target.name}.${UUID.randomUUID()}.tmp")
+            }
         try {
             // 1. Create ZIP (Incremental if possible)
             var usedIncremental = false
@@ -72,6 +84,8 @@ class AtomicContainerStorage(
                 ZipUtils.zip(sourceDir, tempZip)
             }
 
+            FileOutputStream(tempZip, true).use { it.fd.sync() }
+
             // 2. Verify
             verifyZip(tempZip)
 
@@ -97,11 +111,24 @@ class AtomicContainerStorage(
             }
         }
 
-        // Ensure at least one entry exists
+        // Read every entry so ZipFile validates entry data and CRCs, not just the
+        // central directory.
         var hasEntries = false
         try {
             java.util.zip.ZipFile(file).use { zip ->
-                hasEntries = zip.entries().hasMoreElements()
+                val entries = zip.entries()
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    hasEntries = true
+                    if (!entry.isDirectory) {
+                        zip.getInputStream(entry).use { input ->
+                            while (input.read(buffer) >= 0) {
+                                // Reading to EOF validates the entry checksum.
+                            }
+                        }
+                    }
+                }
             }
         } catch (e: Exception) {
             throw IOException("Generated ZIP is corrupted: ${e.message}", e)
@@ -128,40 +155,44 @@ class AtomicContainerStorage(
         target: File,
     ) {
         val backup = File(target.parent, "${target.name}.bak")
+        recoverLocalBackup(target, backup)
+        target.parentFile?.mkdirs()
 
-        // 1. Create backup of existing
-        if (target.exists()) {
-            if (backup.exists()) backup.delete()
-            if (!target.renameTo(backup)) {
-                // Try copy-delete if rename fails (e.g. windows/special fs)
-                // But for Android local storage rename usually works.
-                // If it fails, we might not have permission or it's locked.
-                throw IOException("Failed to create backup. Target file might be locked: ${target.absolutePath}")
-            }
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            return
+        } catch (_: AtomicMoveNotSupportedException) {
+            Logger.w("AtomicContainerStorage", "Atomic replace unsupported for ${target.absolutePath}; using recoverable backup")
+        } catch (error: IOException) {
+            Logger.w("AtomicContainerStorage", "Atomic replace failed for ${target.absolutePath}: ${error.message}")
         }
 
-        // 2. Rename new file to target
-        if (!source.renameTo(target)) {
-            // Rename failed (cross-fs?). Try stream copy.
+        try {
+            if (target.exists()) {
+                Files.move(target.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
             try {
+                Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: IOException) {
                 source.inputStream().use { input ->
-                    target.outputStream().use { output ->
+                    FileOutputStream(target).use { output ->
                         input.copyTo(output)
+                        output.fd.sync()
                     }
                 }
-            } catch (e: Exception) {
-                // Restore backup
-                if (backup.exists()) {
-                    target.delete()
-                    backup.renameTo(target)
-                }
-                throw IOException("Failed to commit file. Restored backup.", e)
             }
-        }
-
-        // 3. Cleanup backup
-        if (backup.exists()) {
-            backup.delete()
+            verifyZip(target)
+            if (backup.exists() && !backup.delete()) {
+                Logger.w("AtomicContainerStorage", "Unable to remove completed backup ${backup.absolutePath}")
+            }
+        } catch (error: Exception) {
+            restoreLocalBackup(target, backup)
+            throw IOException("Failed to commit file; restored the previous version.", error)
         }
     }
 
@@ -169,17 +200,147 @@ class AtomicContainerStorage(
         source: File,
         targetUri: Uri,
     ) {
-        // SAF doesn't support atomic replace natively.
-        // We truncate and write. This is the best we can do without creating new files
-        // and updating pointers (which breaks persistent permission grants).
+        // SAF cannot guarantee rename-over-target. Keep a durable, app-private recovery
+        // copy until the provider confirms and fsyncs the replacement.
+        val backup = safBackupFile(targetUri)
         try {
-            context.contentResolver.openOutputStream(targetUri, "wt")?.use { output ->
-                source.inputStream().use { input ->
-                    input.copyTo(output)
+            recoverInterruptedCommit(targetUri.toString())
+            createSafBackup(targetUri, backup)
+            context.contentResolver.openFileDescriptor(targetUri, "wt")?.use { descriptor ->
+                FileOutputStream(descriptor.fileDescriptor).use { output ->
+                    source.inputStream().use { input -> input.copyTo(output) }
+                    output.fd.sync()
                 }
             } ?: throw IOException("Failed to open SAF stream")
+            verifySafTarget(targetUri)
+            if (backup.exists() && !backup.delete()) {
+                Logger.w("AtomicContainerStorage", "Unable to remove completed SAF backup ${backup.absolutePath}")
+            }
         } catch (e: Exception) {
+            runCatching { restoreSafBackup(targetUri, backup) }
+                .onFailure { Logger.e("AtomicContainerStorage", "Failed to restore SAF backup for $targetUri", it) }
             throw IOException("Failed to commit to SAF URI", e)
+        }
+    }
+
+    /** Repairs an interrupted local or SAF commit before callers inspect or open it. */
+    fun recoverInterruptedCommit(targetPath: String) {
+        if (targetPath.startsWith("content://")) {
+            val uri = Uri.parse(targetPath)
+            val backup = safBackupFile(uri)
+            if (!backup.exists()) return
+            if (runCatching { verifySafTarget(uri) }.isSuccess) {
+                backup.delete()
+            } else {
+                restoreSafBackup(uri, backup)
+            }
+        } else {
+            val target = File(targetPath)
+            recoverLocalBackup(target, File(target.parent, "${target.name}.bak"))
+        }
+    }
+
+    private fun recoverLocalBackup(
+        target: File,
+        backup: File,
+    ) {
+        if (!backup.exists()) return
+        if (target.exists() && runCatching { verifyZip(target) }.isSuccess) {
+            backup.delete()
+            return
+        }
+        restoreLocalBackup(target, backup)
+    }
+
+    private fun restoreLocalBackup(
+        target: File,
+        backup: File,
+    ) {
+        if (!backup.exists()) return
+        if (target.exists() && !target.delete()) {
+            throw IOException("Unable to remove interrupted target ${target.absolutePath}")
+        }
+        try {
+            Files.move(backup.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (error: IOException) {
+            backup.inputStream().use { input ->
+                FileOutputStream(target).use { output ->
+                    input.copyTo(output)
+                    output.fd.sync()
+                }
+            }
+            if (!backup.delete()) Logger.w("AtomicContainerStorage", "Unable to delete restored backup ${backup.absolutePath}")
+        }
+        verifyZip(target)
+    }
+
+    private fun safBackupFile(uri: Uri): File {
+        val digest = MessageDigest.getInstance("SHA-256").digest(uri.toString().toByteArray())
+        val name = digest.joinToString("") { "%02x".format(it) }
+        return File(context.filesDir, "container-recovery/$name.bak").also { it.parentFile?.mkdirs() }
+    }
+
+    private fun createSafBackup(
+        uri: Uri,
+        backup: File,
+    ) {
+        val input = context.contentResolver.openInputStream(uri)
+        if (input == null) {
+            backup.delete()
+            return
+        }
+        val temporary = File(backup.parentFile, "${backup.name}.tmp")
+        try {
+            input.use { source ->
+                FileOutputStream(temporary).use { output ->
+                    source.copyTo(output)
+                    output.fd.sync()
+                }
+            }
+            if (temporary.length() == 0L) {
+                temporary.delete()
+                backup.delete()
+                return
+            }
+            try {
+                Files.move(
+                    temporary.toPath(),
+                    backup.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporary.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            temporary.delete()
+        }
+    }
+
+    private fun restoreSafBackup(
+        uri: Uri,
+        backup: File,
+    ) {
+        if (!backup.exists()) return
+        context.contentResolver.openFileDescriptor(uri, "wt")?.use { descriptor ->
+            FileOutputStream(descriptor.fileDescriptor).use { output ->
+                backup.inputStream().use { input -> input.copyTo(output) }
+                output.fd.sync()
+            }
+        } ?: throw IOException("Unable to reopen SAF target for recovery")
+        verifySafTarget(uri)
+        if (!backup.delete()) Logger.w("AtomicContainerStorage", "Unable to delete restored SAF backup ${backup.absolutePath}")
+    }
+
+    private fun verifySafTarget(uri: Uri) {
+        val check = File(context.cacheDir, "verify_${UUID.randomUUID()}.zip.tmp")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(check).use { output -> input.copyTo(output) }
+            } ?: throw IOException("Unable to read SAF target for verification")
+            verifyZip(check)
+        } finally {
+            check.delete()
         }
     }
 }

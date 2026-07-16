@@ -55,10 +55,17 @@ android {
             jvmTarget.set(JvmTarget.JVM_17)
         }
     }
+
+    packaging {
+        jniLibs {
+            // OpenCV is a published API dependency; do not embed another copy in this AAR.
+            excludes += setOf("**/libopencv_java4.so", "**/libc++_shared.so")
+        }
+    }
 }
 
 dependencies {
-    compileOnly("org.opencv:opencv:4.13.0")
+    api("org.opencv:opencv:4.13.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
