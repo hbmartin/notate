@@ -147,9 +147,11 @@ fun SettingsDialog(
                         var angleSnapping by remember { mutableStateOf(PreferencesManager.isAngleSnappingEnabled(context)) }
                         var axisLocking by remember { mutableStateOf(PreferencesManager.isAxisLockingEnabled(context)) }
                         var shapeDelay by remember { mutableFloatStateOf(PreferencesManager.getShapePerfectionDelay(context).toFloat()) }
+                        var twoFingerTapAction by remember { mutableStateOf(PreferencesManager.getTwoFingerTapAction(context)) }
+                        var stylusButtonAction by remember { mutableStateOf(PreferencesManager.getStylusButtonAction(context)) }
 
                         InputSettingsPanel(
-                            state = InputSettingsState(scribbleEnabled, shapeEnabled, angleSnapping, axisLocking, shapeDelay),
+                            state = InputSettingsState(scribbleEnabled, shapeEnabled, angleSnapping, axisLocking, shapeDelay, twoFingerTapAction, stylusButtonAction),
                             onScribbleChange = {
                                 scribbleEnabled = it
                                 PreferencesManager.setScribbleToEraseEnabled(context, it)
@@ -169,6 +171,14 @@ fun SettingsDialog(
                             onShapeDelayChange = { shapeDelay = it },
                             onShapeDelayFinished = {
                                 PreferencesManager.setShapePerfectionDelay(context, shapeDelay.toLong())
+                            },
+                            onTwoFingerTapChange = {
+                                twoFingerTapAction = it
+                                PreferencesManager.setTwoFingerTapAction(context, it)
+                            },
+                            onStylusButtonChange = {
+                                stylusButtonAction = it
+                                PreferencesManager.setStylusButtonAction(context, it)
                             },
                         )
                     }

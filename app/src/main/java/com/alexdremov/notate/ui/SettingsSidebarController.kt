@@ -41,6 +41,8 @@ class SettingsSidebarController(
     private val onExportRequest: (ExportAction) -> Unit,
     private val onEditToolbar: () -> Unit,
     private val onGeneratePatterns: (com.alexdremov.notate.util.PatternGenerator.PatternType, Float) -> Unit,
+    private val onTwoFingerTapActionChange: (com.alexdremov.notate.model.TwoFingerTapAction) -> Unit,
+    private val onStylusButtonActionChange: (com.alexdremov.notate.model.StylusButtonAction) -> Unit,
 ) {
     private val wrapperView: View = LayoutInflater.from(context).inflate(R.layout.sidebar_layout_wrapper, container, false)
     private val contentFrame: FrameLayout = wrapperView.findViewById(R.id.sidebar_content)
@@ -218,9 +220,23 @@ class SettingsSidebarController(
                                                 shapeDelay,
                                             )
                                     }
+                                val (localTapAction, setTapAction) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(
+                                            com.alexdremov.notate.data.PreferencesManager
+                                                .getTwoFingerTapAction(context),
+                                        )
+                                    }
+                                val (localButtonAction, setButtonAction) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(
+                                            com.alexdremov.notate.data.PreferencesManager
+                                                .getStylusButtonAction(context),
+                                        )
+                                    }
 
                                 InputSettingsPanel(
-                                    state = InputSettingsState(localScribble, localShape, localAngle, localAxis, localShapeDelay),
+                                    state = InputSettingsState(localScribble, localShape, localAngle, localAxis, localShapeDelay, localTapAction, localButtonAction),
                                     onScribbleChange = {
                                         setScribble(it)
                                         com.alexdremov.notate.data.PreferencesManager
@@ -247,6 +263,18 @@ class SettingsSidebarController(
                                             context,
                                             localShapeDelay.toLong(),
                                         )
+                                    },
+                                    onTwoFingerTapChange = {
+                                        setTapAction(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setTwoFingerTapAction(context, it)
+                                        onTwoFingerTapActionChange(it)
+                                    },
+                                    onStylusButtonChange = {
+                                        setButtonAction(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setStylusButtonAction(context, it)
+                                        onStylusButtonActionChange(it)
                                     },
                                 )
 

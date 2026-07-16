@@ -452,6 +452,12 @@ class CanvasActivity : AppCompatActivity() {
                         binding.canvasView.getController().addStrokes(strokes)
                     }
                 },
+                onTwoFingerTapActionChange = { action ->
+                    binding.canvasView.setTwoFingerTapAction(action)
+                },
+                onStylusButtonActionChange = { action ->
+                    binding.canvasView.setStylusButtonAction(action)
+                },
             )
         binding.canvasView.onStrokeStarted = {
             activePenPopup?.dismiss()
@@ -536,6 +542,12 @@ class CanvasActivity : AppCompatActivity() {
 
         binding.canvasView.setCursorView(binding.cursorView)
         binding.minimapView.setup(binding.canvasView)
+        binding.canvasView.setTwoFingerTapAction(
+            com.alexdremov.notate.data.PreferencesManager.getTwoFingerTapAction(this),
+        )
+        binding.canvasView.setStylusButtonAction(
+            com.alexdremov.notate.data.PreferencesManager.getStylusButtonAction(this),
+        )
 
         // ViewModel observation
         lifecycleScope.launch {
