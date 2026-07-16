@@ -99,6 +99,41 @@ class RegionStorage(
         }
     }
 
+    fun importBitmap(bitmap: android.graphics.Bitmap): String? {
+        try {
+            val imagesDir = File(baseDir, DIR_IMAGES)
+            if (!imagesDir.exists() && !imagesDir.mkdirs()) {
+                Logger.e(TAG, "Failed to create images directory: $imagesDir")
+                return null
+            }
+
+            val fileName = "${UUID.randomUUID()}.png"
+            val destFile = File(imagesDir, fileName)
+            val tmpFile = File(imagesDir, "$fileName.tmp")
+
+            try {
+                tmpFile.outputStream().use { output ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output)
+                }
+                if (tmpFile.renameTo(destFile)) {
+                    return destFile.absolutePath
+                }
+                tmpFile.inputStream().use { input ->
+                    destFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                tmpFile.delete()
+                return destFile.absolutePath
+            } catch (e: Exception) {
+                Logger.e(TAG, "Failed to write bitmap stream", e)
+                if (tmpFile.exists()) tmpFile.delete()
+                return null
+            }
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to import bitmap", e)
+            return null
+        }
+    }
+
     @OptIn(ExperimentalSerializationApi::class)
     fun saveRegion(data: RegionData): Boolean {
         val strokeData = ArrayList<StrokeData>()
@@ -198,6 +233,7 @@ class RegionStorage(
                         order = iData.order,
                         rotation = iData.rotation,
                         opacity = iData.opacity,
+                        locked = iData.locked,
                     )
                 data.items.add(image)
             }

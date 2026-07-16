@@ -76,6 +76,14 @@ object CanvasConfig {
     const val PAGE_A4_WIDTH = 2480f
     const val PAGE_A4_HEIGHT = 3508f
     const val PAGE_SPACING = 100f // Gap between pages
+
+    // PDF Import
+    // Canvas page units are ~300 DPI (A4 = 2480x3508 == 595x842pt * 300/72). Map PDF points -> units.
+    const val PDF_POINTS_TO_CANVAS_UNITS = 300f / 72f
+    // Cap rendered bitmap dimension to bound peak memory (image is scaled to full page size at draw).
+    const val PDF_IMPORT_MAX_RENDER_DIMENSION = 2048
+    // Locked page images sit beneath all normal items (strokes default zIndex = 0f).
+    const val PDF_PAGE_IMAGE_Z_INDEX = -1000f
     val PAGE_BACKGROUND_COLOR = Color.WHITE
     val FIXED_PAGE_CANVAS_BG_COLOR = Color.rgb(226, 226, 226) // Slightly gray, outside pages
 

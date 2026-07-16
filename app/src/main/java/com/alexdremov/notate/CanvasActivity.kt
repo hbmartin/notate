@@ -209,6 +209,18 @@ class CanvasActivity : AppCompatActivity() {
             }
         }
 
+    private val pdfPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                lifecycleScope.launch {
+                    binding.canvasView.getController().importPdf(uri.toString())
+                    val data = binding.canvasView.getCanvasData()
+                    binding.canvasView.loadMetadata(data)
+                    binding.canvasView.refreshScreen()
+                }
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -463,6 +475,10 @@ class CanvasActivity : AppCompatActivity() {
 
         binding.canvasView.onRequestInsertImage = {
             imagePickerLauncher.launch(arrayOf("image/*"))
+        }
+
+        binding.canvasView.onRequestImportPdf = {
+            pdfPickerLauncher.launch(arrayOf("application/pdf"))
         }
 
         binding.canvasView.onBrowseFiles = { callback ->

@@ -92,6 +92,8 @@ interface CanvasController {
         height: Float,
     )
 
+    suspend fun importPdf(uri: String)
+
     suspend fun addText(
         text: String,
         x: Float,

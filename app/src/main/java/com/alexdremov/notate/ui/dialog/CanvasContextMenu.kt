@@ -17,6 +17,7 @@ class CanvasContextMenu(
     private val onPaste: () -> Unit,
     private val onPasteImage: () -> Unit,
     private val onInsertLink: () -> Unit,
+    private val onImportPdf: () -> Unit,
 ) {
     private val popupWindow: PopupWindow
     private val view: View
@@ -45,6 +46,11 @@ class CanvasContextMenu(
 
         view.findViewById<View>(R.id.btn_insert_link).setOnClickListener {
             onInsertLink()
+            dismiss()
+        }
+
+        view.findViewById<View>(R.id.btn_import_pdf).setOnClickListener {
+            onImportPdf()
             dismiss()
         }
     }
