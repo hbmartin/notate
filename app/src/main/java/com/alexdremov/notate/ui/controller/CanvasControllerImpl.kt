@@ -247,6 +247,7 @@ class CanvasControllerImpl(
     }
 
     override suspend fun selectItem(item: CanvasItem) {
+        if (item is CanvasImage && item.locked) return
         selectionManager.select(item)
         generateSelectionImposter()
         withContext(Dispatchers.Main) {
@@ -257,11 +258,13 @@ class CanvasControllerImpl(
     }
 
     override suspend fun selectItems(items: List<CanvasItem>) {
-        selectionManager.selectAll(items)
+        val selectable = items.filterNot { it is CanvasImage && it.locked }
+        if (selectable.isEmpty()) return
+        selectionManager.selectAll(selectable)
         generateSelectionImposter()
         withContext(Dispatchers.Main) {
             renderer.setHiddenItems(selectionManager.getSelectedIds())
-            renderer.hideItemsInCache(items)
+            renderer.hideItemsInCache(selectable)
             renderer.invalidate()
         }
     }
@@ -478,6 +481,61 @@ class CanvasControllerImpl(
                     renderer.invalidate()
                     onContentChangedListener?.invoke()
                 }
+            }
+        }
+    }
+
+    override suspend fun importPdf(uri: String) {
+        operationMutex.withLock {
+            if (model.canvasType != com.alexdremov.notate.data.CanvasType.FIXED_PAGES) {
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast
+                        .makeText(context, "Import PDF requires a fixed-page note", android.widget.Toast.LENGTH_SHORT)
+                        .show()
+                }
+                return@withLock
+            }
+
+            val addedItems = ArrayList<CanvasItem>()
+            withContext(Dispatchers.Main) { progressCallback?.invoke(true, "Importing PDF...", 0) }
+            try {
+                withContext(Dispatchers.IO) {
+                    com.alexdremov.notate.util.PdfImportHelper.rasterize(context, Uri.parse(uri)) { index, count, bitmap, page0 ->
+                        if (index == 0) {
+                            model.setPageGeometry(
+                                com.alexdremov.notate.data.CanvasType.FIXED_PAGES,
+                                page0.widthUnits,
+                                page0.heightUnits,
+                            )
+                        }
+                        val path = model.importBitmap(bitmap)
+                        if (path != null) {
+                            val rect = model.getPageBounds(index)
+                            val image =
+                                CanvasImage(
+                                    uri = path,
+                                    logicalBounds = RectF(rect),
+                                    bounds = RectF(rect),
+                                    zIndex = com.alexdremov.notate.config.CanvasConfig.PDF_PAGE_IMAGE_Z_INDEX,
+                                    order = 0,
+                                    locked = true,
+                                )
+                            val added = model.addItem(image)
+                            if (added != null) addedItems.add(added)
+                        }
+                        withContext(Dispatchers.Main) {
+                            val pct = if (count > 0) ((index + 1) * 100 / count) else 100
+                            progressCallback?.invoke(true, "Importing page ${index + 1}/$count", pct)
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    if (addedItems.isNotEmpty()) renderer.updateTilesWithItems(addedItems)
+                    renderer.invalidate()
+                    onContentChangedListener?.invoke()
+                }
+            } finally {
+                withContext(Dispatchers.Main) { progressCallback?.invoke(false, null, 0) }
             }
         }
     }

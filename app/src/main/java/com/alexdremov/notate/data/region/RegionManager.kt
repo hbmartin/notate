@@ -251,6 +251,8 @@ class RegionManager(
         context: android.content.Context,
     ): String? = storage.importImage(uri, context)
 
+    fun importBitmap(bitmap: android.graphics.Bitmap): String? = storage.importBitmap(bitmap)
+
     suspend fun getRegion(id: RegionId): RegionData {
         stateLock.read {
             regionCache.get(id)?.let { return it }
@@ -676,6 +678,7 @@ class RegionManager(
                                 order = data.order,
                                 rotation = data.rotation,
                                 opacity = data.opacity,
+                                locked = data.locked,
                             )
                     } else if (type == 2) {
                         // Type 2 is TextItem

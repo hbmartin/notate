@@ -132,6 +132,7 @@ class OnyxCanvasView
         var minimapDrawer: com.alexdremov.notate.ui.render.MinimapDrawer? = null
 
         var onRequestInsertImage: (() -> Unit)? = null
+        var onRequestImportPdf: (() -> Unit)? = null
         var onBrowseFiles: ((onResult: (name: String, uuid: String) -> Unit) -> Unit)? = null
         var onSelectFile: ((onResult: (name: String, path: String) -> Unit) -> Unit)? = null
         var onLinkActivated: ((com.alexdremov.notate.model.LinkItem) -> Unit)? = null
@@ -267,6 +268,7 @@ class OnyxCanvasView
                                             },
                                             onPasteImage = { onRequestInsertImage?.invoke() },
                                             onInsertLink = { showLinkDialog(worldX, worldY) },
+                                            onImportPdf = { onRequestImportPdf?.invoke() },
                                         )
                                     contextMenu?.show(this@OnyxCanvasView, e.x, e.y)
                                     performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)

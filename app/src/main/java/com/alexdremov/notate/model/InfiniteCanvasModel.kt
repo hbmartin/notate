@@ -113,6 +113,23 @@ class InfiniteCanvasModel {
         }
     }
 
+    /**
+     * Updates the page geometry (and canvas type). Safe to change the *size* of an already
+     * FIXED_PAGES canvas at runtime. Flipping type on a LIVE, already-loaded canvas does NOT
+     * re-wire the fixed-page UI (viewport/background); callers must re-sync via loadMetadata.
+     */
+    suspend fun setPageGeometry(
+        type: CanvasType,
+        width: Float,
+        height: Float,
+    ) {
+        mutex.withLock {
+            canvasType = type
+            pageWidth = width
+            pageHeight = height
+        }
+    }
+
     suspend fun startBatchSession() {
         mutex.withLock {
             historyManager.startBatchSession()
@@ -129,6 +146,8 @@ class InfiniteCanvasModel {
         uri: android.net.Uri,
         context: android.content.Context,
     ): String? = regionManager?.importImage(uri, context)
+
+    fun importBitmap(bitmap: android.graphics.Bitmap): String? = regionManager?.importBitmap(bitmap)
 
     suspend fun getItem(
         id: Long,
@@ -204,7 +223,7 @@ class InfiniteCanvasModel {
                             StrokeGeometry.strokeIntersects(item, optimizedEraser)
                         ) {
                             toRemove.add(item)
-                        } else if (item is CanvasImage && RectF.intersects(item.bounds, optimizedEraser.bounds) &&
+                        } else if (item is CanvasImage && !item.locked && RectF.intersects(item.bounds, optimizedEraser.bounds) &&
                             item.bounds.contains(optimizedEraser.bounds.centerX(), optimizedEraser.bounds.centerY())
                         ) {
                             toRemove.add(item)
@@ -224,6 +243,7 @@ class InfiniteCanvasModel {
                     val simplifiedLasso = StrokeGeometry.simplifyPoints(eraserStroke.points, 3.0f)
                     uniqueCandidates.forEach { item ->
                         if (!eraserStroke.bounds.contains(item.bounds)) return@forEach
+                        if (item is CanvasImage && item.locked) return@forEach
 
                         val isContained =
                             if (StrokeGeometry.isRectFullyInPolygon(item.bounds, simplifiedLasso)) {
