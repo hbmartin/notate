@@ -84,6 +84,9 @@ android {
     packaging {
         jniLibs {
             pickFirsts.add("lib/**/libc++_shared.so")
+            // GitHub distributes a standalone APK, so compress native libraries in the
+            // download and let Android extract them during installation.
+            useLegacyPackaging = true
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

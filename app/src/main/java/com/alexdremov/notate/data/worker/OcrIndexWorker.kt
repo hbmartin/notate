@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.alexdremov.notate.data.PreferencesManager
+import com.alexdremov.notate.ocr.OcrModelPackManager
 import com.alexdremov.notate.ocr.index.OcrIndexWriter
 import com.alexdremov.notate.util.Logger
 import java.io.File
@@ -14,6 +15,7 @@ class OcrIndexWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result {
         if (!PreferencesManager.isBackgroundOcrIndexingEnabled(applicationContext)) return Result.success()
+        if (!OcrModelPackManager.get(applicationContext).isInstalled()) return Result.success()
         val sessionPath = inputData.getString(KEY_SESSION_PATH) ?: return Result.failure()
         val targetPath = inputData.getString(KEY_TARGET_PATH) ?: return Result.failure()
         val sessionDir = File(sessionPath)

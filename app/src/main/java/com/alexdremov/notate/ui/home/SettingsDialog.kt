@@ -28,11 +28,13 @@ import androidx.compose.material.icons.filled.ViewQuilt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -53,6 +55,9 @@ import androidx.compose.ui.unit.sp
 import com.alexdremov.notate.BuildConfig
 import com.alexdremov.notate.R
 import com.alexdremov.notate.data.PreferencesManager
+import com.alexdremov.notate.data.worker.OcrModelDownloadScheduler
+import com.alexdremov.notate.ocr.OcrModelPackManager
+import com.alexdremov.notate.ocr.OcrModelPackState
 import com.alexdremov.notate.ui.settings.InputSettingsPanel
 import com.alexdremov.notate.ui.settings.InputSettingsState
 import com.alexdremov.notate.ui.settings.InterfaceSettingsPanel
@@ -60,6 +65,7 @@ import com.alexdremov.notate.ui.settings.InterfaceSettingsState
 import com.alexdremov.notate.ui.settings.PdfSettingsPanel
 import com.alexdremov.notate.ui.settings.PdfSettingsState
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun SettingsDialog(
@@ -141,7 +147,7 @@ fun SettingsDialog(
                         )
                         SettingsMenuItem(
                             title = "Text recognition & search",
-                            subtitle = "Offline PP-OCRv3 model and local index",
+                            subtitle = "On-device PP-OCRv3 model and local index",
                             icon = Icons.Default.Search,
                             onClick = { currentScreen = SettingsScreen.OCR },
                         )
@@ -231,6 +237,16 @@ fun SettingsDialog(
                         val indexingCount by repository.indexingDocumentCount.collectAsState(initial = 0)
                         val staleCount by repository.staleDocumentCount.collectAsState(initial = 0)
                         val model = remember { com.alexdremov.notate.ocr.OcrModelInfo() }
+                        val modelManager = remember { OcrModelPackManager.get(context) }
+                        val modelState by modelManager.state.collectAsState()
+                        val downloadSize =
+                            remember(modelManager.downloadSizeBytes) {
+                                String.format(Locale.US, "%.1f MiB", modelManager.downloadSizeBytes / (1024.0 * 1024.0))
+                            }
+
+                        LaunchedEffect(modelManager) {
+                            modelManager.refresh()
+                        }
 
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -255,7 +271,42 @@ fun SettingsDialog(
                         }
                         HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
                         Text("Model: ${model.id}", fontWeight = FontWeight.SemiBold)
-                        Text("Offline ARM64 · Chinese + English · four CPU threads", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            when (val state = modelState) {
+                                OcrModelPackState.Checking -> "Checking downloaded files…"
+                                OcrModelPackState.NotInstalled -> "Not downloaded · $downloadSize"
+                                is OcrModelPackState.Downloading ->
+                                    "Downloading · ${(state.progress * 100).toInt()}% of $downloadSize"
+                                is OcrModelPackState.Ready -> "Downloaded · offline Chinese + English"
+                                is OcrModelPackState.Failed -> "Download failed: ${state.message}"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (modelState is OcrModelPackState.Downloading) {
+                            LinearProgressIndicator(
+                                progress = { (modelState as OcrModelPackState.Downloading).progress },
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                when (modelState) {
+                                    is OcrModelPackState.Ready -> scope.launch { modelManager.remove() }
+                                    else -> OcrModelDownloadScheduler.enqueue(context)
+                                }
+                            },
+                            enabled = modelState !is OcrModelPackState.Checking && modelState !is OcrModelPackState.Downloading,
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        ) {
+                            Text(if (modelState is OcrModelPackState.Ready) "Remove recognition files" else "Download recognition files")
+                        }
+                        Text(
+                            "The model is downloaded from the official PaddleOCR hosts and verified before use. " +
+                                "OpenCV and Paddle Lite remain signed inside the app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
                         Text(
                             "Index: $indexedCount notes" +
                                 (if (indexingCount > 0) " · $indexingCount active" else "") +
@@ -269,7 +320,7 @@ fun SettingsDialog(
                                     com.alexdremov.notate.data.worker.OcrBackfillScheduler.schedule(context, replace = true)
                                 }
                             },
-                            enabled = enabled,
+                            enabled = enabled && modelState is OcrModelPackState.Ready,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Rebuild text index")

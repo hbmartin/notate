@@ -6,6 +6,7 @@ import android.graphics.RectF
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -22,7 +23,9 @@ class PaddleLiteOcrEngine(
     @Volatile private var unavailableReason: Throwable? = null
 
     override fun isAvailable(): Boolean =
-        Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } && unavailableReason == null
+        Build.SUPPORTED_ABIS.any { it == "arm64-v8a" } &&
+            unavailableReason == null &&
+            OcrModelPackManager.get(appContext).isInstalled()
 
     override suspend fun recognize(bitmap: Bitmap): List<OcrBlock> =
         withContext(Dispatchers.Default) {
@@ -86,8 +89,15 @@ class PaddleLiteOcrEngine(
     }
 
     override fun close() {
-        predictor?.destroy()
-        predictor = null
+        runBlocking { shutdown() }
+    }
+
+    internal suspend fun shutdown() {
+        mutex.withLock {
+            predictor?.destroy()
+            predictor = null
+            labels = null
+        }
     }
 
     companion object {
@@ -103,4 +113,11 @@ object PaddleOcrProvider {
         instance ?: synchronized(this) {
             instance ?: PaddleLiteOcrEngine(context).also { instance = it }
         }
+
+    internal suspend fun reset() {
+        val previous = synchronized(this) {
+            instance.also { instance = null }
+        }
+        previous?.shutdown()
+    }
 }

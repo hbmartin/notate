@@ -5,6 +5,13 @@
   "preprocessingVersion": 1,
   "dictionaryVersion": "ppocr_keys_v1-2022-01-18",
   "angleClassifier": false,
+  "modelDelivery": {
+    "mode": "on-demand",
+    "packId": "ppocrv3-zh-en-mobile-v1",
+    "downloadBytes": 11904686,
+    "storage": "app-private",
+    "verification": "SHA-256 before atomic activation"
+  },
   "nativeLibraries": [
     {
       "name": "libpaddle_light_api_shared.so",
@@ -25,18 +32,21 @@
   ],
   "files": [
     {
-      "name": "ppocrv3/det_db.nb",
+      "name": "det_db.nb",
       "upstream": "https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_det_slim_infer.nb",
+      "sizeBytes": 1092190,
       "sha256": "998632e7fc99a962a5012caaf76065ce8260e6500996b63364f243ee41b34093"
     },
     {
-      "name": "ppocrv3/rec_crnn.nb",
+      "name": "rec_crnn.nb",
       "upstream": "https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_rec_infer.nb",
+      "sizeBytes": 10786246,
       "sha256": "6280cd7a336390c4c2f31f5688f4621052c450f8f3cb8e35cca7222aa47efad2"
     },
     {
-      "name": "ppocrv3/ppocr_keys_v1.txt",
-      "upstream": "https://github.com/PaddlePaddle/PaddleOCR/blob/main/ppocr/utils/ppocr_keys_v1.txt",
+      "name": "ppocr_keys_v1.txt",
+      "upstream": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/211989f046cc1878460f9e65574690c00a127a1a/ppocr/utils/ppocr_keys_v1.txt",
+      "sizeBytes": 26250,
       "sha256": "a1c84d9bdb9ab29043c58896224d32941783eb821629618416dcb08f12886492"
     }
   ]
