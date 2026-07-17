@@ -28,6 +28,8 @@ class ViewportInteractor(
     private var isInteracting = false
     private var hasPerformedScale = false
     private var isFastModeActive = false
+    private var allowPinchZoom = true
+    private val activePointerIds = linkedSetOf<Int>()
 
     private var lastTouchX = 0f
     private var lastTouchY = 0f
@@ -72,12 +74,15 @@ class ViewportInteractor(
                 return@trace false
             }
 
-            // Pass to ScaleDetector
-            scaleDetector.onTouchEvent(event)
+            if (allowPinchZoom) {
+                scaleDetector.onTouchEvent(event)
+            }
 
             // Handle Panning
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    activePointerIds.clear()
+                    activePointerIds.add(event.getPointerId(event.actionIndex))
                     lastTouchX = event.x
                     lastTouchY = event.y
                     isPanning = false
@@ -88,11 +93,14 @@ class ViewportInteractor(
                 }
 
                 MotionEvent.ACTION_POINTER_DOWN -> {
+                    activePointerIds.add(event.getPointerId(event.actionIndex))
                     updateFocusPoint(event)
                 }
 
                 MotionEvent.ACTION_POINTER_UP -> {
-                    updateFocusPoint(event)
+                    val liftedId = event.getPointerId(event.actionIndex)
+                    updateFocusPoint(event, liftedId)
+                    activePointerIds.remove(liftedId)
                 }
 
                 MotionEvent.ACTION_MOVE -> {
@@ -141,6 +149,7 @@ class ViewportInteractor(
                     }
                     isPanning = false
                     isInteracting = false
+                    activePointerIds.clear()
                 }
             }
 
@@ -191,32 +200,41 @@ class ViewportInteractor(
         matrix.postTranslate(deltaX, 0f)
     }
 
-    private fun updateFocusPoint(event: MotionEvent) {
-        lastTouchX = getFocusX(event)
-        lastTouchY = getFocusY(event)
+    private fun updateFocusPoint(
+        event: MotionEvent,
+        excludedPointerId: Int? = null,
+    ) {
+        lastTouchX = getFocusX(event, excludedPointerId)
+        lastTouchY = getFocusY(event, excludedPointerId)
     }
 
-    private fun getFocusX(event: MotionEvent): Float {
+    private fun getFocusX(
+        event: MotionEvent,
+        excludedPointerId: Int? = null,
+    ): Float {
         var sum = 0f
-        val count = event.pointerCount
-        val skip = if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) event.actionIndex else -1
         var div = 0
-        for (i in 0 until count) {
-            if (i == skip) continue
-            sum += event.getX(i)
+        activePointerIds.forEach { pointerId ->
+            if (pointerId == excludedPointerId) return@forEach
+            val index = event.findPointerIndex(pointerId)
+            if (index < 0) return@forEach
+            sum += event.getX(index)
             div++
         }
         return if (div > 0) sum / div else event.x
     }
 
-    private fun getFocusY(event: MotionEvent): Float {
+    private fun getFocusY(
+        event: MotionEvent,
+        excludedPointerId: Int? = null,
+    ): Float {
         var sum = 0f
-        val count = event.pointerCount
-        val skip = if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) event.actionIndex else -1
         var div = 0
-        for (i in 0 until count) {
-            if (i == skip) continue
-            sum += event.getY(i)
+        activePointerIds.forEach { pointerId ->
+            if (pointerId == excludedPointerId) return@forEach
+            val index = event.findPointerIndex(pointerId)
+            if (index < 0) return@forEach
+            sum += event.getY(index)
             div++
         }
         return if (div > 0) sum / div else event.y
@@ -271,5 +289,9 @@ class ViewportInteractor(
             enforceCentering()
             invalidateCallback()
         }
+    }
+
+    fun setAllowPinchZoom(enabled: Boolean) {
+        allowPinchZoom = enabled
     }
 }

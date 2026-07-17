@@ -34,6 +34,7 @@ import java.util.Collections
 import java.util.HashSet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
 import kotlin.math.floor
 import kotlin.math.log2
@@ -146,9 +147,20 @@ class TileManager(
         val version: Int,
         val forceRefresh: Boolean,
         val regionId: RegionId,
+        val generationToken: Int,
+        val highlighterCommitId: Long? = null,
     )
 
     private val renderVersion = AtomicInteger(0)
+    private val tileGenerationTokens = ConcurrentHashMap<TileCache.TileKey, AtomicInteger>()
+    private val highlighterCommitSequence = AtomicLong(0)
+    private val highlighterCommits = ConcurrentHashMap<Long, HighlighterCommitTracker>()
+
+    private data class HighlighterCommitTracker(
+        val startedNanos: Long,
+        val remainingTiles: AtomicInteger,
+        val regeneratedTiles: Int,
+    )
     private var lastRenderLevel = -1
     private var lastVisibleRect: RectF? = null
     private var lastPrefetchRect: RectF? = null
@@ -590,6 +602,7 @@ class TileManager(
         isHighPriority: Boolean,
         version: Int,
         forceRefresh: Boolean = false,
+        highlighterCommitId: Long? = null,
     ) {
         val key = TileCache.TileKey(col, row, level)
 
@@ -599,19 +612,6 @@ class TileManager(
         val rx = floor(tileRect.centerX() / rSize).toInt()
         val ry = floor(tileRect.centerY() / rSize).toInt()
         val regionId = RegionId(rx, ry)
-
-        val job =
-            PendingJob(
-                key = key,
-                col = col,
-                row = row,
-                level = level,
-                worldSize = worldSize,
-                isHighPriority = isHighPriority,
-                version = version,
-                forceRefresh = forceRefresh,
-                regionId = regionId,
-            )
 
         synchronized(pendingLock) {
             synchronized(generatingKeys) {
@@ -626,6 +626,24 @@ class TileManager(
 
                 generatingKeys.add(key)
             }
+            val generationToken =
+                tileGenerationTokens
+                    .computeIfAbsent(key) { AtomicInteger(0) }
+                    .incrementAndGet()
+            val job =
+                PendingJob(
+                    key = key,
+                    col = col,
+                    row = row,
+                    level = level,
+                    worldSize = worldSize,
+                    isHighPriority = isHighPriority,
+                    version = version,
+                    forceRefresh = forceRefresh,
+                    regionId = regionId,
+                    generationToken = generationToken,
+                    highlighterCommitId = highlighterCommitId,
+                )
 
             // Cancel existing active job for this key if it's still running
             // Note: We don't remove from pendingJobs here; we just update/overwrite it below
@@ -743,7 +761,12 @@ class TileManager(
                 try {
                     Logger.v("TileManager", "Job Start: ${pJob.key} V${pJob.version}")
                     // Task Cancellation Checks
-                    if (!isActive || pJob.version != renderVersion.get() || (!pJob.isHighPriority && isInteracting)) {
+                    if (
+                        !isActive ||
+                        pJob.version != renderVersion.get() ||
+                        pJob.generationToken != tileGenerationTokens[pJob.key]?.get() ||
+                        (!pJob.isHighPriority && isInteracting)
+                    ) {
                         return@launch
                     }
 
@@ -764,7 +787,11 @@ class TileManager(
                     // ATOMIC COMMIT: Only put in cache if the version still matches.
                     // This is the core of the race-proof double buffering.
                     synchronized(pendingLock) {
-                        if (pJob.version == renderVersion.get() && isActive) {
+                        if (
+                            pJob.version == renderVersion.get() &&
+                            pJob.generationToken == tileGenerationTokens[pJob.key]?.get() &&
+                            isActive
+                        ) {
                             tileCache.put(pJob.key, bitmap, pJob.version)
                         } else {
                             Logger.v("TileManager", "Discarding stale tile result for ${pJob.key}")
@@ -788,6 +815,7 @@ class TileManager(
                 synchronized(generatingKeys) { generatingKeys.remove(pJob.key) }
             }
             notifyTileReady()
+            pJob.highlighterCommitId?.let(::completeHighlighterTile)
             activeJobCount.decrementAndGet()
             scheduleJobs()
         }
@@ -879,7 +907,14 @@ class TileManager(
         if (hiddenItemIds.contains(item.order)) return
 
         if (item is Stroke && item.style == com.alexdremov.notate.model.StrokeType.HIGHLIGHTER) {
-            refreshTiles(item.bounds)
+            if (
+                com.alexdremov.notate.data.PreferencesManager.getHighlighterCommitStrategy(context) ==
+                com.alexdremov.notate.data.HighlighterCommitStrategy.LEGACY
+            ) {
+                refreshTiles(item.bounds)
+            } else {
+                commitHighlighterAsync(item.bounds)
+            }
             return
         }
 
@@ -959,7 +994,14 @@ class TileManager(
         if (highlighters.isNotEmpty()) {
             val unionBounds = RectF(highlighters[0].bounds)
             for (i in 1 until highlighters.size) unionBounds.union(highlighters[i].bounds)
-            refreshTiles(unionBounds)
+            if (
+                com.alexdremov.notate.data.PreferencesManager.getHighlighterCommitStrategy(context) ==
+                com.alexdremov.notate.data.HighlighterCommitStrategy.LEGACY
+            ) {
+                refreshTiles(unionBounds)
+            } else {
+                commitHighlighterAsync(unionBounds)
+            }
         }
 
         if (standardItems.isEmpty()) return
@@ -1095,6 +1137,71 @@ class TileManager(
         notifyTileReady()
     }
 
+    /**
+     * Re-renders only cached/active tiles touched by the tight highlighter bounds. Each tile is
+     * regenerated from model content in z-order, which preserves under-ink placement, one-pass
+     * self-overlap, and separate-stroke darkening. The old bitmap remains visible until commit.
+     */
+    private fun commitHighlighterAsync(bounds: RectF) {
+        val schedulingStart = System.nanoTime()
+        val version = renderVersion.get()
+        val snapshotKeys = tileCache.snapshot().keys
+        val generating = synchronized(generatingKeys) { HashSet(generatingKeys) }
+        val affected =
+            (snapshotKeys + generating)
+                .distinct()
+                .filter { key ->
+                    val worldSize = calculateWorldTileSize(key.level)
+                    RectF.intersects(bounds, getTileWorldRect(key.col, key.row, worldSize))
+                }
+
+        if (affected.isEmpty()) {
+            HighlighterCommitMetrics.record(0L, 0)
+            HighlighterCommitMetrics.recordSchedulingOverhead(System.nanoTime() - schedulingStart)
+            return
+        }
+
+        val commitId = highlighterCommitSequence.incrementAndGet()
+        highlighterCommits[commitId] =
+            HighlighterCommitTracker(
+                startedNanos = schedulingStart,
+                remainingTiles = AtomicInteger(affected.size),
+                regeneratedTiles = affected.size,
+            )
+        val visibleRect = lastVisibleRect
+        val currentLevel = if (visibleRect != null) calculateLOD(lastScale) else -1
+        affected.forEach { key ->
+            val worldSize = calculateWorldTileSize(key.level)
+            val tileRect = getTileWorldRect(key.col, key.row, worldSize)
+            val visible =
+                visibleRect != null &&
+                    key.level == currentLevel &&
+                    RectF.intersects(visibleRect, tileRect)
+            queueTileGeneration(
+                key.col,
+                key.row,
+                key.level,
+                worldSize,
+                visible,
+                version,
+                forceRefresh = true,
+                highlighterCommitId = commitId,
+            )
+        }
+        HighlighterCommitMetrics.recordSchedulingOverhead(System.nanoTime() - schedulingStart)
+        notifyTileReady()
+    }
+
+    private fun completeHighlighterTile(commitId: Long) {
+        val tracker = highlighterCommits[commitId] ?: return
+        if (tracker.remainingTiles.decrementAndGet() == 0 && highlighterCommits.remove(commitId, tracker)) {
+            HighlighterCommitMetrics.record(
+                durationNanos = System.nanoTime() - tracker.startedNanos,
+                regeneratedTiles = tracker.regeneratedTiles,
+            )
+        }
+    }
+
     fun forceRefreshVisibleTiles(
         visibleRect: RectF,
         scale: Float,
@@ -1120,6 +1227,7 @@ class TileManager(
         synchronized(generatingKeys) {
             tileCache.clear()
             generatingKeys.clear()
+            tileGenerationTokens.clear()
             lastVisibleCount = 0
         }
         synchronized(pendingLock) {
@@ -1134,6 +1242,7 @@ class TileManager(
         initJobs.clear()
         generationJobs.values.forEach { it.cancel() }
         generationJobs.clear()
+        highlighterCommits.clear()
 
         synchronized(pendingLock) {
             pendingJobsByKey.clear()

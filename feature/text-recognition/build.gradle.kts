@@ -19,6 +19,7 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.4")
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("com.google.mlkit:digital-ink-recognition:19.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.10.0")
     ksp("androidx.room:room-compiler:2.8.4")
 

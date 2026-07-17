@@ -71,6 +71,7 @@ class NotateApplication :
         CanvasConfig.DEBUG_SHOW_REGIONS = PreferencesManager.isDebugShowRegionsEnabled(this)
         CanvasConfig.DEBUG_SHOW_BOUNDING_BOX = PreferencesManager.isDebugBoundingBoxEnabled(this)
         CanvasConfig.DEBUG_ENABLE_PROFILING = PreferencesManager.isDebugProfilingEnabled(this)
+        CanvasConfig.DEBUG_LOG_GESTURES = PreferencesManager.isDebugGestureLoggingEnabled(this)
 
         logDeviceInfo()
 

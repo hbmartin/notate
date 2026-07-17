@@ -31,6 +31,8 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.alexdremov.notate.data.LinkType
+import com.alexdremov.notate.data.PagePreviewRailMode
+import com.alexdremov.notate.data.PagePreviewRailSide
 import com.alexdremov.notate.data.SyncService
 import com.alexdremov.notate.data.syncService
 import com.alexdremov.notate.feature.canvas.R
@@ -46,6 +48,8 @@ import com.alexdremov.notate.ui.SettingsSidebarController
 import com.alexdremov.notate.ui.SidebarCoordinator
 import com.alexdremov.notate.ui.ToolbarCoordinator
 import com.alexdremov.notate.ui.export.ExportAction
+import com.alexdremov.notate.ui.navigation.PagePreviewRail
+import com.alexdremov.notate.ui.theme.NotateTheme
 import com.alexdremov.notate.ui.toolbar.MainToolbar
 import com.alexdremov.notate.ui.view.FloatingWindowView
 import com.alexdremov.notate.util.Logger
@@ -69,6 +73,11 @@ class CanvasActivity : AppCompatActivity() {
     private var isGridOpen = false
     private val isToolbarHorizontal = mutableStateOf(true)
     private var progressDialog: androidx.appcompat.app.AlertDialog? = null
+    private val pageRailVisible = mutableStateOf(false)
+    private val pageRailPinned = mutableStateOf(false)
+    private var pageRailAutoSuppressed = false
+    private var pageRailCompletedCloseCycle = false
+    private var distractionFreeActive = false
 
     private lateinit var sidebarCoordinator: SidebarCoordinator
     private lateinit var sidebarController: SettingsSidebarController
@@ -239,6 +248,10 @@ class CanvasActivity : AppCompatActivity() {
 
         // Intercept Back Press - Save in background and close immediately
         onBackPressedDispatcher.addCallback(this) {
+            if (viewModel.isEditMode.value) {
+                viewModel.setEditMode(false)
+                return@addCallback
+            }
             val path = currentCanvasPath
             if (path != null) {
                 // Launch on Activity Scope to capture data safely while Activity is alive
@@ -346,6 +359,10 @@ class CanvasActivity : AppCompatActivity() {
             }
         }
 
+        binding.editModeInputLayer.setOnClickListener {
+            viewModel.setEditMode(false)
+        }
+
         toolbarCoordinator.setup()
 
         toolbarCoordinator.onRequestCollapse = {
@@ -403,9 +420,16 @@ class CanvasActivity : AppCompatActivity() {
                                 com.alexdremov.notate.model.ActionType.INSERT_IMAGE -> {
                                     imagePickerLauncher.launch(arrayOf("image/*"))
                                 }
+
+                                com.alexdremov.notate.model.ActionType.ZOOM_TO_FIT -> {
+                                    binding.canvasView.zoomToFit()
+                                }
                             }
                         },
                         onOpenSidebar = {
+                            if (viewModel.isEditMode.value) {
+                                viewModel.setEditMode(false)
+                            }
                             sidebarCoordinator.open()
                             sidebarController.showMainMenu()
                         },
@@ -448,6 +472,10 @@ class CanvasActivity : AppCompatActivity() {
                     sidebarCoordinator.close()
                     viewModel.setEditMode(true)
                 },
+                onZoomToFit = {
+                    binding.canvasView.zoomToFit()
+                    sidebarCoordinator.close()
+                },
                 onGeneratePatterns = { type, intensity ->
                     lifecycleScope.launch(Dispatchers.Default) {
                         // Calculate visible rect in Model coordinates
@@ -474,6 +502,16 @@ class CanvasActivity : AppCompatActivity() {
                 },
                 onPalmRejectionChanged = { enabled ->
                     binding.canvasView.setPalmRejectionEnabled(enabled)
+                },
+                onFixedPagePreferencesChanged = {
+                    binding.canvasView.applyFixedPageInteractionPreferences()
+                },
+                onPagePreviewRailPreferencesChanged = {
+                    pageRailAutoSuppressed = false
+                    updatePagePreviewRail()
+                },
+                onDebugThreeFingerTap = {
+                    binding.canvasView.triggerThreeFingerTapForDebug()
                 },
                 onTwoFingerTapActionChange = { action ->
                     binding.canvasView.setTwoFingerTapAction(action)
@@ -565,6 +603,7 @@ class CanvasActivity : AppCompatActivity() {
 
         binding.canvasView.setCursorView(binding.cursorView)
         binding.minimapView.setup(binding.canvasView)
+        setupPagePreviewRail()
         binding.canvasView.setPalmRejectionEnabled(
             com.alexdremov.notate.data.PreferencesManager.isPalmRejectionEnabled(this),
         )
@@ -608,6 +647,7 @@ class CanvasActivity : AppCompatActivity() {
                     viewModel.isEditMode.collect { isEdit ->
                         Logger.d("NotateDebug", "CanvasActivity:  isEditMode=$isEdit")
                         binding.toolbarContainer.isDragEnabled = !isEdit
+                        binding.editModeInputLayer.visibility = if (isEdit) View.VISIBLE else View.GONE
                     }
                 }
                 launch {
@@ -645,7 +685,9 @@ class CanvasActivity : AppCompatActivity() {
                             withContext(Dispatchers.Main) {
                                 val tUiStart = System.currentTimeMillis()
 
-                                binding.canvasView.getModel().initializeSession(session.regionManager)
+                                binding.canvasView
+                                    .getModel()
+                                    .initializeSession(session.regionManager, session.recognitionStore)
                                 binding.canvasView.loadMetadata(session.metadata)
                                 pendingSearchBounds?.let { bounds ->
                                     pendingSearchBounds = null
@@ -655,6 +697,7 @@ class CanvasActivity : AppCompatActivity() {
                                 val isFixed = session.metadata.canvasType == com.alexdremov.notate.data.CanvasType.FIXED_PAGES
                                 isFixedPageState?.value = isFixed
                                 viewModel.setFixedPageMode(isFixed)
+                                updatePagePreviewRail()
 
                                 // Toolbar init logic is now in ViewModel's loadCanvasSession
 
@@ -892,7 +935,7 @@ class CanvasActivity : AppCompatActivity() {
             val canvasView = OnyxCanvasView(this)
 
             // Initialize
-            canvasView.getModel().initializeSession(session.regionManager)
+            canvasView.getModel().initializeSession(session.regionManager, session.recognitionStore)
             canvasView.loadMetadata(session.metadata)
             canvasView.setReadOnly(true)
 
@@ -942,6 +985,7 @@ class CanvasActivity : AppCompatActivity() {
         super.onResume()
         // Ensure no sync runs while canvas is active
         syncManager.setCanvasActive(true)
+        com.alexdremov.notate.data.NotebookChangeNotifier.notify(this, currentCanvasPath)
     }
 
     override fun onPause() {
@@ -1035,14 +1079,106 @@ class CanvasActivity : AppCompatActivity() {
     }
 
     private fun setDistractionFree(enabled: Boolean) {
+        distractionFreeActive = enabled
         val vis = if (enabled) View.GONE else View.VISIBLE
         binding.toolbarContainer.visibility = vis
         binding.minimapView.visibility = vis
         if (enabled) {
             sidebarCoordinator.close()
         }
+        updatePagePreviewRail()
         // Recompute stylus exclusion so the hidden toolbar stops reserving area.
         updateExclusionRects()
+    }
+
+    private fun setupPagePreviewRail() {
+        binding.pagePreviewRail.setViewCompositionStrategy(
+            androidx.compose.ui.platform.ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed,
+        )
+        binding.pagePreviewRail.setContent {
+            val visible by pageRailVisible
+            val pinned by pageRailPinned
+            if (visible) {
+                NotateTheme {
+                    PagePreviewRail(
+                        controller = binding.canvasView.getController(),
+                        model = binding.canvasView.getModel(),
+                        pinned = pinned,
+                        onPinChanged = { shouldPin ->
+                            val mode = if (shouldPin) PagePreviewRailMode.PINNED else PagePreviewRailMode.AUTO
+                            com.alexdremov.notate.data.PreferencesManager
+                                .setPagePreviewRailMode(this, mode)
+                            pageRailAutoSuppressed = false
+                            updatePagePreviewRail()
+                        },
+                        onClose = {
+                            val mode =
+                                com.alexdremov.notate.data.PreferencesManager
+                                    .getPagePreviewRailMode(this)
+                            if (mode == PagePreviewRailMode.PINNED) {
+                                com.alexdremov.notate.data.PreferencesManager
+                                    .setPagePreviewRailMode(this, PagePreviewRailMode.OFF)
+                            } else {
+                                pageRailAutoSuppressed = true
+                                pageRailCompletedCloseCycle = false
+                            }
+                            updatePagePreviewRail()
+                        },
+                    )
+                }
+            }
+        }
+
+        val existingViewportListener = binding.canvasView.onViewportChanged
+        binding.canvasView.onViewportChanged = {
+            existingViewportListener?.invoke()
+            updatePagePreviewRail()
+        }
+        updatePagePreviewRail()
+    }
+
+    private fun updatePagePreviewRail() {
+        if (!::binding.isInitialized) return
+        val mode =
+            com.alexdremov.notate.data.PreferencesManager
+                .getPagePreviewRailMode(this)
+        val fixedPage =
+            binding.canvasView.getModel().canvasType ==
+                com.alexdremov.notate.data.CanvasType.FIXED_PAGES
+        val shouldShow =
+            when {
+                distractionFreeActive || !fixedPage || mode == PagePreviewRailMode.OFF -> false
+                mode == PagePreviewRailMode.PINNED -> true
+                else -> {
+                    val fitScale = binding.canvasView.getZoomToFitScale().coerceAtLeast(0.01f)
+                    val currentScale = binding.canvasView.getCurrentScale()
+                    if (currentScale > fitScale * 1.15f) {
+                        pageRailCompletedCloseCycle = true
+                        false
+                    } else if (currentScale <= fitScale) {
+                        if (pageRailAutoSuppressed && pageRailCompletedCloseCycle) {
+                            pageRailAutoSuppressed = false
+                        }
+                        !pageRailAutoSuppressed
+                    } else {
+                        pageRailVisible.value
+                    }
+                }
+            }
+        pageRailPinned.value = mode == PagePreviewRailMode.PINNED
+        pageRailVisible.value = shouldShow
+        binding.pagePreviewRail.visibility = if (shouldShow) View.VISIBLE else View.GONE
+
+        val size =
+            com.alexdremov.notate.data.PreferencesManager
+                .getPagePreviewRailSize(this)
+        val side =
+            com.alexdremov.notate.data.PreferencesManager
+                .getPagePreviewRailSide(this)
+        val params = binding.pagePreviewRail.layoutParams as FrameLayout.LayoutParams
+        params.width = (size.widthDp * resources.displayMetrics.density).toInt()
+        params.gravity = if (side == PagePreviewRailSide.LEFT) Gravity.START else Gravity.END
+        binding.pagePreviewRail.layoutParams = params
     }
 
     private fun updateExclusionRects() {

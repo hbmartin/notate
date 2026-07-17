@@ -52,6 +52,9 @@ class SelectionInteractor(
     private var prevAngle = 0f
     private var prevCentroidX = 0f
     private var prevCentroidY = 0f
+    private var multiTouchPointerId1 = -1
+    private var multiTouchPointerId2 = -1
+    private var objectRotationAllowed = true
 
     // Constants
     private val HANDLE_HIT_RADIUS = 60f // Screen pixels
@@ -161,6 +164,8 @@ class SelectionInteractor(
     fun onPointerDown(event: MotionEvent) {
         if (isDragging && event.pointerCount == 2) {
             isTransformingMultiTouch = true
+            multiTouchPointerId1 = event.getPointerId(0)
+            multiTouchPointerId2 = event.getPointerId(1)
             val x1 = event.getX(0)
             val y1 = event.getY(0)
             val x2 = event.getX(1)
@@ -171,6 +176,19 @@ class SelectionInteractor(
             prevCentroidX = (x1 + x2) / 2f
             prevCentroidY = (y1 + y2) / 2f
         }
+    }
+
+    fun onPointerUp(event: MotionEvent) {
+        val liftedId = event.getPointerId(event.actionIndex)
+        if (liftedId == multiTouchPointerId1 || liftedId == multiTouchPointerId2) {
+            isTransformingMultiTouch = false
+            multiTouchPointerId1 = -1
+            multiTouchPointerId2 = -1
+        }
+    }
+
+    fun setObjectRotationAllowed(allowed: Boolean) {
+        objectRotationAllowed = allowed
     }
 
     fun onMove(event: MotionEvent): Boolean {
@@ -255,7 +273,7 @@ class SelectionInteractor(
 
             HandleType.ROTATE -> {
                 dragDistanceAccumulator += hypot(x - lastTouchX, y - lastTouchY)
-                handleRotate(x, y)
+                if (objectRotationAllowed) handleRotate(x, y)
             }
 
             HandleType.TOP_LEFT, HandleType.TOP_RIGHT,
@@ -490,10 +508,13 @@ class SelectionInteractor(
     }
 
     private fun handleMultiTouchTransform(event: MotionEvent) {
-        val x1 = event.getX(0)
-        val y1 = event.getY(0)
-        val x2 = event.getX(1)
-        val y2 = event.getY(1)
+        val index1 = event.findPointerIndex(multiTouchPointerId1)
+        val index2 = event.findPointerIndex(multiTouchPointerId2)
+        if (index1 < 0 || index2 < 0) return
+        val x1 = event.getX(index1)
+        val y1 = event.getY(index1)
+        val x2 = event.getX(index2)
+        val y2 = event.getY(index2)
 
         val currSpan = hypot(x2 - x1, y2 - y1)
         val currAngle = kotlin.math.atan2(y2 - y1, x2 - x1)
@@ -512,7 +533,7 @@ class SelectionInteractor(
             val m = Matrix()
             m.postTranslate(-worldPivot[0], -worldPivot[1])
             m.postScale(scale, scale)
-            m.postRotate(rotateDeg)
+            if (objectRotationAllowed) m.postRotate(rotateDeg)
             m.postTranslate(worldPivot[0], worldPivot[1])
 
             val worldDelta = floatArrayOf(dx, dy)
@@ -545,17 +566,19 @@ class SelectionInteractor(
         if (dist(3) < HANDLE_HIT_RADIUS) return HandleType.BOTTOM_LEFT
 
         // Rotate Handle (High Priority, Further Out)
-        val tmx = (screenCorners[0] + screenCorners[2]) / 2f
-        val tmy = (screenCorners[1] + screenCorners[3]) / 2f
-        val dx = screenCorners[2] - screenCorners[0]
-        val dy = screenCorners[3] - screenCorners[1]
-        val len = hypot(dx, dy)
-        if (len > 0.1f) {
-            val ux = dy / len
-            val uy = -dx / len
-            val rhx = tmx + ux * 80f
-            val rhy = tmy + uy * 80f
-            if (hypot(x - rhx, y - rhy) < HANDLE_HIT_RADIUS) return HandleType.ROTATE
+        if (objectRotationAllowed) {
+            val tmx = (screenCorners[0] + screenCorners[2]) / 2f
+            val tmy = (screenCorners[1] + screenCorners[3]) / 2f
+            val dx = screenCorners[2] - screenCorners[0]
+            val dy = screenCorners[3] - screenCorners[1]
+            val len = hypot(dx, dy)
+            if (len > 0.1f) {
+                val ux = dy / len
+                val uy = -dx / len
+                val rhx = tmx + ux * 80f
+                val rhy = tmy + uy * 80f
+                if (hypot(x - rhx, y - rhy) < HANDLE_HIT_RADIUS) return HandleType.ROTATE
+            }
         }
 
         // Mid-Handle Detection

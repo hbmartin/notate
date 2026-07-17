@@ -70,6 +70,19 @@ object PreferencesManager {
     private const val KEY_BACKGROUND_OCR_INDEXING = "background_ocr_indexing"
     private const val KEY_TWO_FINGER_TAP_ACTION = "two_finger_tap_action"
     private const val KEY_STYLUS_BUTTON_ACTION = "stylus_button_action"
+    private const val KEY_SHAPE_ROTATION_CORRECTION = "shape_rotation_correction_enabled"
+    private const val KEY_SHAPE_ROTATION_PRESET = "shape_rotation_snap_preset"
+    private const val KEY_FIXED_PAGE_PINCH_ZOOM = "fixed_page_pinch_zoom_enabled"
+    private const val KEY_FIXED_PAGE_OBJECT_ROTATION = "fixed_page_object_rotation_enabled"
+    private const val KEY_PAGE_PREVIEW_RAIL_MODE = "page_preview_rail_mode"
+    private const val KEY_PAGE_PREVIEW_RAIL_SIDE = "page_preview_rail_side"
+    private const val KEY_PAGE_PREVIEW_RAIL_SIZE = "page_preview_rail_size"
+    private const val KEY_DEFAULT_RECOGNITION_PROVIDER = "default_recognition_provider"
+    private const val KEY_RECOGNITION_MODE = "recognition_mode"
+    private const val KEY_REVIEW_RECOGNITION_BEFORE_EXPORT = "review_recognition_before_export"
+    private const val KEY_EMBED_RECOGNIZED_HANDWRITING = "embed_recognized_handwriting"
+    private const val KEY_ML_KIT_LANGUAGE_TAG = "ml_kit_language_tag"
+    private const val KEY_DOWNLOADED_ML_KIT_LANGUAGES = "downloaded_ml_kit_languages"
 
     // Debug Preferences
     private const val KEY_DEBUG_USE_SIMPLE_RENDERER = "debug_use_simple_renderer"
@@ -78,6 +91,9 @@ object PreferencesManager {
     private const val KEY_DEBUG_SHOW_BOUNDING_BOX = "debug_show_bounding_box"
     private const val KEY_DEBUG_SHOW_REGIONS = "debug_show_regions"
     private const val KEY_DEBUG_ENABLE_PROFILING = "debug_enable_profiling"
+    private const val KEY_DEBUG_LOG_GESTURES = "debug_log_gestures"
+    private const val KEY_DEBUG_HIGHLIGHTER_STRATEGY = "debug_highlighter_strategy"
+    private const val KEY_DEBUG_RECOGNITION = "debug_recognition"
 
     private const val KEY_FLOAT_WINDOW_RECT = "float_window_rect"
 
@@ -131,6 +147,139 @@ object PreferencesManager {
         action: StylusButtonAction,
     ) {
         getPrefs(context).edit().putString(KEY_STYLUS_BUTTON_ACTION, action.name).apply()
+    }
+
+    fun isShapeRotationCorrectionEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_SHAPE_ROTATION_CORRECTION, true)
+
+    fun setShapeRotationCorrectionEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_SHAPE_ROTATION_CORRECTION, enabled).apply()
+    }
+
+    fun getShapeRotationSnapPreset(context: Context): ShapeRotationSnapPreset =
+        enumPreference(context, KEY_SHAPE_ROTATION_PRESET, ShapeRotationSnapPreset.NORMAL)
+
+    fun setShapeRotationSnapPreset(
+        context: Context,
+        preset: ShapeRotationSnapPreset,
+    ) {
+        putEnum(context, KEY_SHAPE_ROTATION_PRESET, preset)
+    }
+
+    fun isFixedPagePinchZoomEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_FIXED_PAGE_PINCH_ZOOM, true)
+
+    fun setFixedPagePinchZoomEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_FIXED_PAGE_PINCH_ZOOM, enabled).apply()
+    }
+
+    fun isFixedPageObjectRotationEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_FIXED_PAGE_OBJECT_ROTATION, true)
+
+    fun setFixedPageObjectRotationEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_FIXED_PAGE_OBJECT_ROTATION, enabled).apply()
+    }
+
+    fun getPagePreviewRailMode(context: Context): PagePreviewRailMode =
+        enumPreference(context, KEY_PAGE_PREVIEW_RAIL_MODE, PagePreviewRailMode.OFF)
+
+    fun setPagePreviewRailMode(
+        context: Context,
+        mode: PagePreviewRailMode,
+    ) {
+        putEnum(context, KEY_PAGE_PREVIEW_RAIL_MODE, mode)
+    }
+
+    fun getPagePreviewRailSide(context: Context): PagePreviewRailSide =
+        enumPreference(context, KEY_PAGE_PREVIEW_RAIL_SIDE, PagePreviewRailSide.LEFT)
+
+    fun setPagePreviewRailSide(
+        context: Context,
+        side: PagePreviewRailSide,
+    ) {
+        putEnum(context, KEY_PAGE_PREVIEW_RAIL_SIDE, side)
+    }
+
+    fun getPagePreviewRailSize(context: Context): PagePreviewRailSize =
+        enumPreference(context, KEY_PAGE_PREVIEW_RAIL_SIZE, PagePreviewRailSize.COMPACT)
+
+    fun setPagePreviewRailSize(
+        context: Context,
+        size: PagePreviewRailSize,
+    ) {
+        putEnum(context, KEY_PAGE_PREVIEW_RAIL_SIZE, size)
+    }
+
+    fun getDefaultRecognitionProvider(context: Context): RecognitionProviderId =
+        enumPreference(context, KEY_DEFAULT_RECOGNITION_PROVIDER, RecognitionProviderId.PP_OCR)
+
+    fun setDefaultRecognitionProvider(
+        context: Context,
+        provider: RecognitionProviderId,
+    ) {
+        putEnum(context, KEY_DEFAULT_RECOGNITION_PROVIDER, provider)
+    }
+
+    fun getRecognitionMode(context: Context): RecognitionMode =
+        enumPreference(context, KEY_RECOGNITION_MODE, RecognitionMode.DEFAULT_PROVIDER)
+
+    fun setRecognitionMode(
+        context: Context,
+        mode: RecognitionMode,
+    ) {
+        putEnum(context, KEY_RECOGNITION_MODE, mode)
+    }
+
+    fun shouldReviewRecognitionBeforeExport(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_REVIEW_RECOGNITION_BEFORE_EXPORT, false)
+
+    fun setReviewRecognitionBeforeExport(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_REVIEW_RECOGNITION_BEFORE_EXPORT, enabled).apply()
+    }
+
+    fun shouldEmbedRecognizedHandwriting(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_EMBED_RECOGNIZED_HANDWRITING, true)
+
+    fun setEmbedRecognizedHandwriting(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_EMBED_RECOGNIZED_HANDWRITING, enabled).apply()
+    }
+
+    fun getMlKitLanguageTag(context: Context): String =
+        getPrefs(context).getString(
+            KEY_ML_KIT_LANGUAGE_TAG,
+            java.util.Locale.getDefault().toLanguageTag(),
+        ) ?: java.util.Locale.getDefault().toLanguageTag()
+
+    fun setMlKitLanguageTag(
+        context: Context,
+        languageTag: String,
+    ) {
+        getPrefs(context).edit().putString(KEY_ML_KIT_LANGUAGE_TAG, languageTag).apply()
+    }
+
+    fun getDownloadedMlKitLanguages(context: Context): Set<String> =
+        getPrefs(context).getStringSet(KEY_DOWNLOADED_ML_KIT_LANGUAGES, emptySet())?.toSet().orEmpty()
+
+    fun setDownloadedMlKitLanguages(
+        context: Context,
+        languageTags: Set<String>,
+    ) {
+        getPrefs(context).edit().putStringSet(KEY_DOWNLOADED_ML_KIT_LANGUAGES, languageTags).apply()
     }
 
     fun getPdfExportScale(context: Context): Float = getPrefs(context).getFloat(KEY_PDF_EXPORT_SCALE, 2.0f)
@@ -233,6 +382,35 @@ object PreferencesManager {
         enabled: Boolean,
     ) {
         getPrefs(context).edit().putBoolean(KEY_DEBUG_ENABLE_PROFILING, enabled).apply()
+    }
+
+    fun isDebugGestureLoggingEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_DEBUG_LOG_GESTURES, false)
+
+    fun setDebugGestureLoggingEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_DEBUG_LOG_GESTURES, enabled).apply()
+    }
+
+    fun getHighlighterCommitStrategy(context: Context): HighlighterCommitStrategy =
+        enumPreference(context, KEY_DEBUG_HIGHLIGHTER_STRATEGY, HighlighterCommitStrategy.OPTIMIZED)
+
+    fun setHighlighterCommitStrategy(
+        context: Context,
+        strategy: HighlighterCommitStrategy,
+    ) {
+        putEnum(context, KEY_DEBUG_HIGHLIGHTER_STRATEGY, strategy)
+    }
+
+    fun isRecognitionDebugEnabled(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_DEBUG_RECOGNITION, false)
+
+    fun setRecognitionDebugEnabled(
+        context: Context,
+        enabled: Boolean,
+    ) {
+        getPrefs(context).edit().putBoolean(KEY_DEBUG_RECOGNITION, enabled).apply()
     }
 
     fun isScribbleToEraseEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_SCRIBBLE_TO_ERASE, true)
@@ -589,5 +767,22 @@ object PreferencesManager {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private inline fun <reified T : Enum<T>> enumPreference(
+        context: Context,
+        key: String,
+        default: T,
+    ): T {
+        val value = getPrefs(context).getString(key, default.name) ?: default.name
+        return enumValues<T>().firstOrNull { it.name == value } ?: default
+    }
+
+    private fun putEnum(
+        context: Context,
+        key: String,
+        value: Enum<*>,
+    ) {
+        getPrefs(context).edit().putString(key, value.name).apply()
     }
 }

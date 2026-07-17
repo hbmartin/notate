@@ -25,6 +25,8 @@ class CanvasSession(
     metadata: CanvasData,
     private val lockHandle: FileLockManager.LockedFileHandle? = null,
 ) {
+    val recognitionStore: RecognitionStore = RecognitionStore(sessionDir)
+
     // Mutable state - updated in place, not copied
     @Volatile
     var metadata: CanvasData = metadata

@@ -4,6 +4,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import com.alexdremov.notate.util.StrokeGeometry
 import com.onyx.android.sdk.data.note.TouchPoint
+import java.util.UUID
 import kotlin.jvm.Transient
 
 data class Stroke(
@@ -15,6 +16,8 @@ data class Stroke(
     override val bounds: RectF,
     val strokeOrder: Long = 0,
     override val zIndex: Float = 0f,
+    val strokeId: String = UUID.randomUUID().toString(),
+    val origin: StrokeOrigin = StrokeOrigin.FREEHAND,
 ) : CanvasItem {
     override val order: Long get() = strokeOrder
 

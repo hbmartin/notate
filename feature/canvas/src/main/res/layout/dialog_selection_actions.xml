@@ -30,7 +30,7 @@
         android:id="@+id/btnRecognize"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Recognize text"
+        android:text="Recognize / Review"
         android:textColor="@android:color/black"
         android:textSize="@dimen/text_size_body"
         android:padding="16dp"

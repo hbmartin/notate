@@ -19,6 +19,26 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Consumes a genuine outside tap while toolbar editing without blocking the toolbar above. -->
+    <View
+        android:id="@+id/edit_mode_input_layer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent"
+        android:clickable="true"
+        android:focusable="true"
+        android:elevation="5dp"
+        android:visibility="gone" />
+
+    <androidx.compose.ui.platform.ComposeView
+        android:id="@+id/page_preview_rail"
+        android:layout_width="112dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#FFFFFFFF"
+        android:elevation="4dp"
+        android:visibility="gone" />
+
     <!-- 2. Toolbar (Middle Layer) -->
     <!-- Initial margins handled by Coordinator -->
     <com.alexdremov.notate.ui.DraggableLinearLayout

@@ -29,9 +29,10 @@ object ThumbnailGenerator {
         regionManager: RegionManager,
         metadata: CanvasData,
         context: android.content.Context,
+        fixedPageIndex: Int = 0,
     ): String? =
         try {
-            val bitmap = generateBitmapFromRegions(regionManager, metadata, context)
+            val bitmap = generateBitmapFromRegions(regionManager, metadata, context, fixedPageIndex)
             val outputStream = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
             val byteArray = outputStream.toByteArray()
@@ -46,6 +47,7 @@ object ThumbnailGenerator {
         regionManager: RegionManager,
         metadata: CanvasData,
         context: android.content.Context,
+        fixedPageIndex: Int,
     ): Bitmap {
         val bitmap = Bitmap.createBitmap(THUMB_WIDTH, THUMB_HEIGHT, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -56,7 +58,8 @@ object ThumbnailGenerator {
                 CanvasType.FIXED_PAGES -> {
                     val w = if (metadata.pageWidth > 0) metadata.pageWidth else 2480f
                     val h = if (metadata.pageHeight > 0) metadata.pageHeight else 3508f
-                    RectF(0f, 0f, w, h)
+                    val top = fixedPageIndex.coerceAtLeast(0) * (h + CanvasConfig.PAGE_SPACING)
+                    RectF(0f, top, w, top + h)
                 }
 
                 CanvasType.INFINITE -> {

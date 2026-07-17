@@ -76,7 +76,7 @@ class OcrIndexWriterTest {
     }
 
     @Test
-    fun missingModelKeepsPreviousRegionRowsAndMarksDocumentStale() = runTest {
+    fun missingModelIndexesAvailableContentWithoutRerunningInkRecognition() = runTest {
         val dao = database.dao()
         val documentId = "doc-stale"
         dao.upsertDocument(OcrDocumentEntity(documentId, null, "/note.notate", "Note", 1, "old", "INDEXED"))
@@ -115,9 +115,9 @@ class OcrIndexWriterTest {
         )
 
         val outcome = OcrIndexWriter(context, UnavailableEngine, dao).indexSession(session, "/note.notate", 2)
-        assertThat(outcome.staleRegions).isEqualTo(1)
-        assertThat(dao.getBlocksForRegion(documentId, "r_0_0").map { it.text }).containsExactly("previous text")
-        assertThat(dao.getDocument(documentId)?.status).isEqualTo("STALE")
+        assertThat(outcome.staleRegions).isEqualTo(0)
+        assertThat(dao.getBlocksForRegion(documentId, "r_0_0")).isEmpty()
+        assertThat(dao.getDocument(documentId)?.status).isEqualTo("INDEXED")
         session.deleteRecursively()
     }
 

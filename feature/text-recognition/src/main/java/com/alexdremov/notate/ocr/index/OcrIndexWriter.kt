@@ -9,7 +9,10 @@ import com.alexdremov.notate.data.CanvasData
 import com.alexdremov.notate.data.CanvasSerializer
 import com.alexdremov.notate.data.PathRelations
 import com.alexdremov.notate.data.PreferencesManager
+import com.alexdremov.notate.data.RecognitionDocument
+import com.alexdremov.notate.data.RecognitionStore
 import com.alexdremov.notate.data.RegionProto
+import com.alexdremov.notate.data.TranscriptionState
 import com.alexdremov.notate.model.Stroke
 import com.alexdremov.notate.ocr.OcrBlock
 import com.alexdremov.notate.ocr.OcrModelInfo
@@ -93,6 +96,39 @@ class OcrIndexWriter(
         var unchanged = 0
         var stale = 0
         val liveRegionIds = mutableSetOf(FILENAME_REGION)
+
+        File(sessionDir, RecognitionStore.FILE_NAME).takeIf(File::isFile)?.let { recognitionFile ->
+            liveRegionIds += RECOGNITION_REGION
+            val recognitionBytes = recognitionFile.readBytes()
+            val recognitionHash = sha256(recognitionBytes, RECOGNITION_INDEX_REVISION.toByteArray())
+            if (dao.getRegionHash(documentId, RECOGNITION_REGION) == recognitionHash) {
+                unchanged++
+            } else {
+                val recognition =
+                    ProtoBuf.decodeFromByteArray(RecognitionDocument.serializer(), recognitionBytes)
+                val blocks =
+                    recognition.lines.mapIndexed { index, line ->
+                        val source =
+                            if (line.state == TranscriptionState.STALE) {
+                                OcrTextSource.STALE_HANDWRITING
+                            } else {
+                                OcrTextSource.ACCEPTED_HANDWRITING
+                            }
+                        block(
+                            documentId = documentId,
+                            regionId = RECOGNITION_REGION,
+                            regionHash = recognitionHash,
+                            source = source,
+                            text = line.acceptedText,
+                            confidence = line.confidence ?: 1f,
+                            bounds = line.geometry.toRectF(),
+                            index = index,
+                        )
+                    }
+                dao.replaceRegion(documentId, RECOGNITION_REGION, recognitionHash, blocks)
+                indexed++
+            }
+        }
 
         sessionDir.listFiles { file -> file.isFile && REGION_FILE.matches(file.name) }
             .orEmpty()
@@ -190,8 +226,9 @@ class OcrIndexWriter(
             }
         }
 
-        if (region.strokes.isNotEmpty()) {
-            check(engine.isAvailable()) { "PP-OCRv3 runtime is unavailable" }
+        // Accepted Transcriptions above are authoritative. Raw OCR remains a best-effort
+        // supplement for ink which has not yet been reviewed and stored.
+        if (region.strokes.isNotEmpty() && engine.isAvailable()) {
             val strokes = region.strokes.map(CanvasSerializer::fromStrokeData)
             try {
                 val recognized = OcrTiledRecognizer.recognize(strokes, engine)
@@ -268,6 +305,8 @@ class OcrIndexWriter(
     companion object {
         private val REGION_FILE = Regex("r_-?\\d+_-?\\d+\\.bin")
         private const val FILENAME_REGION = "__filename__"
+        private const val RECOGNITION_REGION = "__accepted_handwriting__"
+        private const val RECOGNITION_INDEX_REVISION = "accepted-handwriting-v1"
         const val STATUS_INDEXING = "INDEXING"
         const val STATUS_INDEXED = "INDEXED"
         const val STATUS_STALE = "STALE"

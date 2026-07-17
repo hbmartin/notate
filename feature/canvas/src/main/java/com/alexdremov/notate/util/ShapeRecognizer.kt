@@ -50,7 +50,11 @@ object ShapeRecognizer {
         val path: Path, // Combined path for preview
     )
 
-    fun recognize(points: List<TouchPoint>): RecognitionResult? {
+    fun recognize(
+        points: List<TouchPoint>,
+        rotationCorrectionEnabled: Boolean = false,
+        rotationThresholdDegrees: Float = 4f,
+    ): RecognitionResult? {
         if (points.size < 10) {
             Logger.d("ShapeRecognizer", "Recognition aborted: too few points (${points.size})")
             return null
@@ -76,7 +80,11 @@ object ShapeRecognizer {
             val path = Path()
             path.moveTo(start.x, start.y)
             path.lineTo(end.x, end.y)
-            return RecognitionResult(RecognizedShape.LINE, listOf(listOf(start, end)), path)
+            return applyRotationCorrection(
+                RecognitionResult(RecognizedShape.LINE, listOf(listOf(start, end)), path),
+                rotationCorrectionEnabled,
+                rotationThresholdDegrees,
+            )
         }
 
         // --- Closed Shape Check ---
@@ -145,13 +153,21 @@ object ShapeRecognizer {
             // It's a triangle candidate.
             if (polyScore < circleScore) {
                 Logger.d("ShapeRecognizer", "Recognized as TRIANGLE (Score: $polyScore vs $circleScore)")
-                return createPolygonResult(RecognizedShape.TRIANGLE, simplified)
+                return applyRotationCorrection(
+                    createPolygonResult(RecognizedShape.TRIANGLE, simplified),
+                    rotationCorrectionEnabled,
+                    rotationThresholdDegrees,
+                )
             }
         } else if (vertexCount == 4) {
             // Square vs Circle.
             if (polyScore < circleScore) {
                 Logger.d("ShapeRecognizer", "Recognized as SQUARE (Score: $polyScore vs $circleScore)")
-                return createRectangleResult(simplified)
+                return applyRotationCorrection(
+                    createRectangleResult(simplified),
+                    rotationCorrectionEnabled,
+                    rotationThresholdDegrees,
+                )
             } else {
                 Logger.d("ShapeRecognizer", "Recognized as CIRCLE (Override 4-vertex) (Score: $circleScore vs $polyScore)")
                 return createCircleResult(cx, cy, avgRadius)
@@ -160,7 +176,11 @@ object ShapeRecognizer {
             // Pentagon vs Circle
             if (polyScore < circleScore) {
                 Logger.d("ShapeRecognizer", "Recognized as PENTAGON (Score: $polyScore vs $circleScore)")
-                return createRegularPolygonResult(RecognizedShape.PENTAGON, simplified)
+                return applyRotationCorrection(
+                    createRegularPolygonResult(RecognizedShape.PENTAGON, simplified),
+                    rotationCorrectionEnabled,
+                    rotationThresholdDegrees,
+                )
             } else {
                 Logger.d("ShapeRecognizer", "Recognized as CIRCLE (Override 5-vertex) (Score: $circleScore vs $polyScore)")
                 return createCircleResult(cx, cy, avgRadius)
@@ -169,7 +189,11 @@ object ShapeRecognizer {
             // Hexagon vs Circle
             if (polyScore < circleScore) {
                 Logger.d("ShapeRecognizer", "Recognized as HEXAGON (Score: $polyScore vs $circleScore)")
-                return createRegularPolygonResult(RecognizedShape.HEXAGON, simplified)
+                return applyRotationCorrection(
+                    createRegularPolygonResult(RecognizedShape.HEXAGON, simplified),
+                    rotationCorrectionEnabled,
+                    rotationThresholdDegrees,
+                )
             } else {
                 Logger.d("ShapeRecognizer", "Recognized as CIRCLE (Override 6-vertex) (Score: $circleScore vs $polyScore)")
                 return createCircleResult(cx, cy, avgRadius)
@@ -288,12 +312,6 @@ object ShapeRecognizer {
         var baseAngle = avg4Angle / 4f
         // baseAngle is now in range (-PI/4, PI/4], i.e., (-45, 45] degrees
 
-        // Snap to axis (0 degrees) if within 5 degrees
-        val snapThreshold = 5.0 * PI / 180.0
-        if (abs(baseAngle) < snapThreshold) {
-            baseAngle = 0f
-        }
-
         val cosA = cos(baseAngle)
         val sinA = sin(baseAngle)
 
@@ -397,6 +415,59 @@ object ShapeRecognizer {
         }
         // Circle is a single continuous segment
         return RecognitionResult(RecognizedShape.CIRCLE, listOf(circlePoints), path)
+    }
+
+    /**
+     * Corrects only the rotation of orientation-bearing perfected geometry. The result is snapped
+     * to a 15-degree increment when it lies inside the selected threshold; circles are unchanged.
+     */
+    internal fun applyRotationCorrection(
+        result: RecognitionResult,
+        enabled: Boolean,
+        thresholdDegrees: Float,
+    ): RecognitionResult {
+        if (!enabled || result.shape == RecognizedShape.CIRCLE || result.segments.isEmpty()) return result
+        val reference = result.segments.firstOrNull { it.size >= 2 } ?: return result
+        val start = reference.first()
+        val end = reference.last()
+        val angle = Math.toDegrees(atan2((end.y - start.y).toDouble(), (end.x - start.x).toDouble())).toFloat()
+        val snapped = kotlin.math.round(angle / 15f) * 15f
+        var delta = snapped - angle
+        while (delta > 180f) delta -= 360f
+        while (delta < -180f) delta += 360f
+        if (abs(delta) > thresholdDegrees) return result
+
+        val pivot =
+            if (result.shape == RecognizedShape.LINE) {
+                PointF((start.x + end.x) / 2f, (start.y + end.y) / 2f)
+            } else {
+                val vertices = result.segments.mapNotNull { it.firstOrNull() }
+                PointF(
+                    vertices.map(PointF::x).average().toFloat(),
+                    vertices.map(PointF::y).average().toFloat(),
+                )
+            }
+        val radians = Math.toRadians(delta.toDouble())
+        val cosDelta = cos(radians).toFloat()
+        val sinDelta = sin(radians).toFloat()
+        fun rotate(point: PointF): PointF {
+            val x = point.x - pivot.x
+            val y = point.y - pivot.y
+            return PointF(
+                pivot.x + x * cosDelta - y * sinDelta,
+                pivot.y + x * sinDelta + y * cosDelta,
+            )
+        }
+
+        val correctedSegments = result.segments.map { segment -> segment.map(::rotate) }
+        val correctedPath = Path()
+        correctedSegments.forEachIndexed { index, segment ->
+            if (segment.isEmpty()) return@forEachIndexed
+            if (index == 0) correctedPath.moveTo(segment.first().x, segment.first().y)
+            segment.drop(1).forEach { correctedPath.lineTo(it.x, it.y) }
+        }
+        if (result.shape != RecognizedShape.LINE) correctedPath.close()
+        return result.copy(segments = correctedSegments, path = correctedPath)
     }
 
     private fun calculatePolygonError(

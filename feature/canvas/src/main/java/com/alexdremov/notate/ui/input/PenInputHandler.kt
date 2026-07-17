@@ -6,6 +6,7 @@ import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import com.alexdremov.notate.config.CanvasConfig
+import com.alexdremov.notate.data.PreferencesManager
 import com.alexdremov.notate.model.EraserType
 import com.alexdremov.notate.model.PenTool
 import com.alexdremov.notate.model.StrokeType
@@ -14,6 +15,7 @@ import com.alexdremov.notate.ui.controller.CanvasController
 import com.alexdremov.notate.util.ColorUtils
 import com.alexdremov.notate.util.Logger
 import com.alexdremov.notate.util.ShapeRecognizer
+import com.alexdremov.notate.model.StrokeOrigin
 import com.onyx.android.sdk.api.device.epd.EpdController
 import com.onyx.android.sdk.api.device.epd.UpdateMode
 import com.onyx.android.sdk.data.note.TouchPoint
@@ -51,6 +53,8 @@ class PenInputHandler(
     @Volatile
     private var isStrokeInProgress = false
 
+    fun isStrokeActive(): Boolean = isStrokeInProgress
+
     // --- Selection State ---
     private var isSelecting = false // True if drawing selection lasso/rect
 
@@ -86,7 +90,16 @@ class PenInputHandler(
                 if (currentTool.type == ToolType.SELECT || currentTool.type == ToolType.ERASER) return@DwellDetector
 
                 // Shape Perfection Logic (Stylus Dwell)
-                val result = ShapeRecognizer.recognize(pts)
+                val correctionEnabled =
+                    PreferencesManager.isShapeRotationCorrectionEnabled(view.context)
+                val correctionThreshold =
+                    PreferencesManager.getShapeRotationSnapPreset(view.context).thresholdDegrees
+                val result =
+                    ShapeRecognizer.recognize(
+                        pts,
+                        rotationCorrectionEnabled = correctionEnabled,
+                        rotationThresholdDegrees = correctionThreshold,
+                    )
                 if (result != null && result.shape != ShapeRecognizer.RecognizedShape.NONE) {
                     pendingPerfectShape = result
                     dwellDetector.markRecognized()
@@ -614,6 +627,7 @@ class PenInputHandler(
                                             color = toolSnapshot.color,
                                             width = toolSnapshot.width,
                                             style = toolSnapshot.strokeType,
+                                            origin = StrokeOrigin.PERFECTED_SHAPE,
                                             bounds =
                                                 com.alexdremov.notate.util.StrokeGeometry.computeStrokeBounds(
                                                     segmentPath,

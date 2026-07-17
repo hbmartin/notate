@@ -11,11 +11,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -69,6 +73,118 @@ object PageThumbnailGenerator {
 
         canvas.restore()
         return bitmap
+    }
+}
+
+@Composable
+fun PagePreviewRail(
+    controller: CanvasController,
+    model: InfiniteCanvasModel,
+    pinned: Boolean,
+    onPinChanged: (Boolean) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    var currentPage by remember { mutableIntStateOf(0) }
+    var totalPages by remember { mutableIntStateOf(1) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            currentPage = controller.getCurrentPageIndex()
+            totalPages = controller.getTotalPages()
+            kotlinx.coroutines.delay(250)
+        }
+    }
+    LaunchedEffect(currentPage) {
+        listState.animateScrollToItem(currentPage.coerceAtLeast(0))
+    }
+
+    Surface(
+        modifier = modifier.fillMaxHeight(),
+        color = Color.White,
+        tonalElevation = 4.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color.Black),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { onPinChanged(!pinned) }) {
+                    Icon(
+                        Icons.Default.PushPin,
+                        if (pinned) "Unpin page previews" else "Pin page previews",
+                        tint = if (pinned) Color.Black else Color.Gray,
+                    )
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, "Close page previews", tint = Color.Black)
+                }
+            }
+            HorizontalDivider(color = Color.Black)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(totalPages) { index ->
+                    RailThumbnailItem(
+                        model = model,
+                        pageIndex = index,
+                        selected = index == currentPage,
+                        onClick = {
+                            scope.launch {
+                                controller.jumpToPage(index)
+                            }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RailThumbnailItem(
+    model: InfiniteCanvasModel,
+    pageIndex: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    var thumbnail by remember(pageIndex) { mutableStateOf<Bitmap?>(null) }
+    val context = LocalContext.current
+    LaunchedEffect(pageIndex) {
+        thumbnail =
+            withContext(Dispatchers.Default) {
+                PageThumbnailGenerator.generatePageThumbnail(model, pageIndex, 224, 317, context)
+            }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f / 1.414f)
+                    .background(Color.White)
+                    .border(if (selected) 3.dp else 1.dp, Color.Black),
+        ) {
+            thumbnail?.let {
+                Image(
+                    bitmap = it.asImageBitmap(),
+                    contentDescription = "Page ${pageIndex + 1}",
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        Text("${pageIndex + 1}", color = Color.Black, style = MaterialTheme.typography.labelMedium)
     }
 }
 
