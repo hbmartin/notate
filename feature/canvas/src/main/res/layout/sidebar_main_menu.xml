@@ -92,6 +92,42 @@
         android:background="#000000"
         android:layout_marginStart="56dp" />
 
+    <LinearLayout
+        android:id="@+id/menu_item_zoom_to_fit"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp">
+
+        <ImageView
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_crop_square"
+            app:tint="#000000" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="16dp"
+            android:text="Zoom to Fit"
+            android:textColor="#000000"
+            android:textSize="@dimen/text_size_body"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/ui_stroke_standard"
+        android:background="#000000"
+        android:layout_marginStart="56dp" />
+
     <!-- Edit Toolbar Item -->
     <LinearLayout
         android:id="@+id/menu_item_edit_toolbar"
@@ -178,6 +214,48 @@
         android:layout_height="@dimen/ui_stroke_standard"
         android:background="#000000"
         android:layout_marginStart="56dp" />
+
+    <LinearLayout
+        android:id="@+id/menu_item_text_recognition"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="?attr/selectableItemBackground"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp">
+
+        <ImageView
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_text"
+            app:tint="#000000" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_weight="1"
+            android:text="Text recognition &amp; search"
+            android:textColor="#000000"
+            android:textSize="@dimen/text_size_body"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@drawable/ic_chevron_right"
+            app:tint="#000000" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/ui_stroke_standard"
+        android:layout_marginStart="56dp"
+        android:background="#000000" />
+
     <LinearLayout
         android:id="@+id/menu_item_export"
         android:layout_width="match_parent"

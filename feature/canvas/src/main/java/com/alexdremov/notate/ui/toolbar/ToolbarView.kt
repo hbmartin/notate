@@ -719,6 +719,7 @@ fun RenderToolbarItemIcon(item: ToolbarItem) {
                     ActionType.UNDO -> R.drawable.ic_undo
                     ActionType.REDO -> R.drawable.ic_redo
                     ActionType.INSERT_IMAGE -> R.drawable.ic_add
+                    ActionType.ZOOM_TO_FIT -> R.drawable.ic_crop_square
                 }
             Icon(painter = painterResource(iconRes), contentDescription = item.actionType.name, tint = Color.Black)
         }
@@ -842,8 +843,18 @@ fun ToolbarEditPanel(
                 onClick = { viewModel.addToolbarItem(ToolbarItem.Action(ActionType.INSERT_IMAGE)) },
             )
 
-            // Add Page Nav
-            if (isFixedPageMode) {
+            AddItemButton(
+                item = ToolbarItem.Action(ActionType.ZOOM_TO_FIT),
+                label = "Fit",
+                onClick = { viewModel.addToolbarItem(ToolbarItem.Action(ActionType.ZOOM_TO_FIT)) },
+            )
+        }
+
+        if (isFixedPageMode) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
                 AddItemButton(
                     item = ToolbarItem.Widget(WidgetType.PAGE_NAVIGATION),
                     label = stringResource(R.string.nav_tool),

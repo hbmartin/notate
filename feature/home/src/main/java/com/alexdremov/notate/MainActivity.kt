@@ -41,6 +41,7 @@ import com.alexdremov.notate.ui.home.components.DeleteConfirmationDialog
 import com.alexdremov.notate.ui.theme.NotateTheme
 import com.alexdremov.notate.util.Logger
 import com.alexdremov.notate.vm.HomeViewModel
+import com.alexdremov.notate.widget.NotateWidgetProvider
 import com.onyx.android.sdk.api.device.EpdDeviceManager
 import kotlinx.coroutines.launch
 
@@ -78,6 +79,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.action == NotateWidgetProvider.ACTION_OPEN_WIDGET_NOTE) {
+            intent.getStringExtra(NotateWidgetProvider.EXTRA_NOTEBOOK_PATH)?.let { path ->
+                openCanvas(CanvasDestination(path))
+            }
+            return
+        }
         if (intent?.action == Intent.ACTION_VIEW) {
             val uri = intent.data ?: return
             val path = if (uri.scheme == "file") uri.path else uri.toString()
@@ -97,6 +104,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         EpdDeviceManager.enterAnimationUpdate(true)
         viewModel.refresh()
+        NotateWidgetProvider.refreshAll(this)
     }
 
     override fun onPause() {

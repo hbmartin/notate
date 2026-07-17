@@ -5,6 +5,7 @@ package com.alexdremov.notate.data
 import com.alexdremov.notate.config.CanvasConfig
 import com.alexdremov.notate.model.BackgroundStyle
 import com.alexdremov.notate.model.StrokeType
+import com.alexdremov.notate.model.StrokeOrigin
 import com.alexdremov.notate.model.Tag
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.protobuf.ProtoNumber
@@ -19,7 +20,7 @@ data class CanvasData(
     @ProtoNumber(1)
     val thumbnail: String? = null, // Base64 encoded PNG
     @ProtoNumber(2)
-    val version: Int = 3,
+    val version: Int = 4,
     @ProtoNumber(4)
     val offsetX: Float = 0f,
     @ProtoNumber(5)
@@ -148,6 +149,10 @@ data class StrokeData(
     val strokeOrder: Long = 0,
     @ProtoNumber(8)
     val zIndex: Float = 0f,
+    @ProtoNumber(9)
+    val strokeId: String = "",
+    @ProtoNumber(10)
+    val origin: StrokeOrigin = StrokeOrigin.UNKNOWN,
 ) {
     companion object {
         const val PACKED_POINT_STRIDE = 6

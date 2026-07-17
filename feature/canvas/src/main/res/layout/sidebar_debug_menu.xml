@@ -348,6 +348,61 @@
             android:text="Trigger" />
     </LinearLayout>
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Highlighter finalization"
+            android:textColor="#000000"
+            android:textSize="@dimen/text_size_body"
+            android:textStyle="bold" />
+
+        <Spinner
+            android:id="@+id/spinner_debug_highlighter_strategy"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/tv_debug_highlighter_metrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#444444"
+            android:textSize="@dimen/text_size_small" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Recognition diagnostics"
+            android:textColor="#000000"
+            android:textSize="@dimen/text_size_body"
+            android:textStyle="bold" />
+
+        <Switch
+            android:id="@+id/switch_debug_recognition"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Keep rejected candidate text locally" />
+
+        <Button
+            android:id="@+id/btn_debug_clear_recognition"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Clear diagnostics" />
+    </LinearLayout>
+
     <!-- Force Log Level -->
     <LinearLayout
         android:layout_width="match_parent"

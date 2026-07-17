@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FingerTouchRouterTest {
-    private val event = mockk<MotionEvent>()
+    private val event = mockk<MotionEvent>(relaxed = true)
 
     @Test
     fun `palm rejection consumes only after three-finger detection`() {
@@ -52,6 +52,27 @@ class FingerTouchRouterTest {
         val consumed = router.route(event, isReadOnly = true, palmRejectionEnabled = false)
 
         assertFalse(consumed)
+        assertTrue(calls.isEmpty())
+    }
+
+    @Test
+    fun `active stylus stroke suppresses three-finger callback`() {
+        val calls = mutableListOf<String>()
+        val router =
+            FingerTouchRouter(
+                onThreeFingerEvent = { calls += "three" },
+                onTwoFingerEvent = { calls += "two" },
+            )
+
+        val consumed =
+            router.route(
+                event,
+                isReadOnly = false,
+                palmRejectionEnabled = true,
+                stylusStrokeActive = true,
+            )
+
+        assertTrue(consumed)
         assertTrue(calls.isEmpty())
     }
 }

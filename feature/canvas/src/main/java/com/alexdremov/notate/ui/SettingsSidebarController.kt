@@ -30,6 +30,7 @@ import com.alexdremov.notate.ui.settings.InterfaceSettingsState
 import com.alexdremov.notate.ui.settings.SettingsToggle
 import com.alexdremov.notate.ui.theme.NotateTheme
 import com.alexdremov.notate.vm.DrawingViewModel
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 class SettingsSidebarController(
@@ -41,8 +42,11 @@ class SettingsSidebarController(
     private val onStyleUpdate: (BackgroundStyle) -> Unit,
     private val onExportRequest: (ExportAction) -> Unit,
     private val onEditToolbar: () -> Unit,
+    private val onZoomToFit: () -> Unit,
     private val onGeneratePatterns: (com.alexdremov.notate.util.PatternGenerator.PatternType, Float) -> Unit,
     private val onPalmRejectionChanged: (Boolean) -> Unit,
+    private val onFixedPagePreferencesChanged: () -> Unit,
+    private val onPagePreviewRailPreferencesChanged: () -> Unit,
     private val onDebugThreeFingerTap: () -> Unit,
     private val onTwoFingerTapActionChange: (com.alexdremov.notate.model.TwoFingerTapAction) -> Unit,
     private val onStylusButtonActionChange: (com.alexdremov.notate.model.StylusButtonAction) -> Unit,
@@ -94,8 +98,16 @@ class SettingsSidebarController(
             showExportMenu()
         }
 
+        mainMenuView.findViewById<View>(R.id.menu_item_text_recognition).setOnClickListener {
+            showTextRecognitionMenu()
+        }
+
         mainMenuView.findViewById<View>(R.id.menu_item_edit_toolbar).setOnClickListener {
             onEditToolbar()
+        }
+
+        mainMenuView.findViewById<View>(R.id.menu_item_zoom_to_fit).setOnClickListener {
+            onZoomToFit()
         }
 
         mainMenuView.findViewById<View>(R.id.menu_item_debug).setOnClickListener {
@@ -191,6 +203,18 @@ class SettingsSidebarController(
                                     com.alexdremov.notate.data.PreferencesManager
                                         .getShapePerfectionDelay(context)
                                         .toFloat()
+                                val shapeRotationCorrection =
+                                    com.alexdremov.notate.data.PreferencesManager
+                                        .isShapeRotationCorrectionEnabled(context)
+                                val shapeRotationPreset =
+                                    com.alexdremov.notate.data.PreferencesManager
+                                        .getShapeRotationSnapPreset(context)
+                                val fixedPagePinch =
+                                    com.alexdremov.notate.data.PreferencesManager
+                                        .isFixedPagePinchZoomEnabled(context)
+                                val fixedPageRotation =
+                                    com.alexdremov.notate.data.PreferencesManager
+                                        .isFixedPageObjectRotationEnabled(context)
 
                                 val (localScribble, setScribble) =
                                     androidx.compose.runtime.remember {
@@ -245,6 +269,22 @@ class SettingsSidebarController(
                                                 .isPalmRejectionEnabled(context),
                                         )
                                     }
+                                val (localShapeRotation, setLocalShapeRotation) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(shapeRotationCorrection)
+                                    }
+                                val (localShapePreset, setLocalShapePreset) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(shapeRotationPreset.name)
+                                    }
+                                val (localFixedPinch, setLocalFixedPinch) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(fixedPagePinch)
+                                    }
+                                val (localFixedRotation, setLocalFixedRotation) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(fixedPageRotation)
+                                    }
 
                                 InputSettingsPanel(
                                     state =
@@ -257,6 +297,10 @@ class SettingsSidebarController(
                                             localPalm,
                                             localTapAction,
                                             localButtonAction,
+                                            localShapeRotation,
+                                            localShapePreset,
+                                            localFixedPinch,
+                                            localFixedRotation,
                                         ),
                                     onScribbleChange = {
                                         setScribble(it)
@@ -303,6 +347,31 @@ class SettingsSidebarController(
                                             .setStylusButtonAction(context, it)
                                         onStylusButtonActionChange(it)
                                     },
+                                    onShapeRotationCorrectionChange = {
+                                        setLocalShapeRotation(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setShapeRotationCorrectionEnabled(context, it)
+                                    },
+                                    onShapeRotationPresetChange = {
+                                        setLocalShapePreset(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setShapeRotationSnapPreset(
+                                                context,
+                                                com.alexdremov.notate.data.ShapeRotationSnapPreset.valueOf(it),
+                                            )
+                                    },
+                                    onFixedPagePinchZoomChange = {
+                                        setLocalFixedPinch(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setFixedPagePinchZoomEnabled(context, it)
+                                        onFixedPagePreferencesChanged()
+                                    },
+                                    onFixedPageObjectRotationChange = {
+                                        setLocalFixedRotation(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setFixedPageObjectRotationEnabled(context, it)
+                                        onFixedPagePreferencesChanged()
+                                    },
                                 )
 
                                 HorizontalDivider(
@@ -313,12 +382,70 @@ class SettingsSidebarController(
                                     androidx.compose.runtime.remember(timeout) {
                                         androidx.compose.runtime.mutableFloatStateOf(timeout.toFloat())
                                     }
+                                val (localRailMode, setLocalRailMode) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(
+                                            com.alexdremov.notate.data.PreferencesManager
+                                                .getPagePreviewRailMode(context)
+                                                .name,
+                                        )
+                                    }
+                                val (localRailSide, setLocalRailSide) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(
+                                            com.alexdremov.notate.data.PreferencesManager
+                                                .getPagePreviewRailSide(context)
+                                                .name,
+                                        )
+                                    }
+                                val (localRailSize, setLocalRailSize) =
+                                    androidx.compose.runtime.remember {
+                                        androidx.compose.runtime.mutableStateOf(
+                                            com.alexdremov.notate.data.PreferencesManager
+                                                .getPagePreviewRailSize(context)
+                                                .name,
+                                        )
+                                    }
 
                                 InterfaceSettingsPanel(
-                                    state = InterfaceSettingsState(collapsible, localTimeout),
+                                    state =
+                                        InterfaceSettingsState(
+                                            collapsible,
+                                            localTimeout,
+                                            localRailMode,
+                                            localRailSide,
+                                            localRailSize,
+                                        ),
                                     onCollapsibleChange = { viewModel.setCollapsibleToolbar(it) },
                                     onTimeoutChange = { setLocalTimeout(it) },
                                     onTimeoutFinished = { viewModel.setToolbarCollapseTimeout(localTimeout.toLong()) },
+                                    onPagePreviewRailModeChange = {
+                                        setLocalRailMode(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setPagePreviewRailMode(
+                                                context,
+                                                com.alexdremov.notate.data.PagePreviewRailMode.valueOf(it),
+                                            )
+                                        onPagePreviewRailPreferencesChanged()
+                                    },
+                                    onPagePreviewRailSideChange = {
+                                        setLocalRailSide(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setPagePreviewRailSide(
+                                                context,
+                                                com.alexdremov.notate.data.PagePreviewRailSide.valueOf(it),
+                                            )
+                                        onPagePreviewRailPreferencesChanged()
+                                    },
+                                    onPagePreviewRailSizeChange = {
+                                        setLocalRailSize(it)
+                                        com.alexdremov.notate.data.PreferencesManager
+                                            .setPagePreviewRailSize(
+                                                context,
+                                                com.alexdremov.notate.data.PagePreviewRailSize.valueOf(it),
+                                            )
+                                        onPagePreviewRailPreferencesChanged()
+                                    },
                                 )
 
                                 HorizontalDivider(
@@ -352,10 +479,28 @@ class SettingsSidebarController(
         val btnExport: Button = exportView.findViewById(R.id.btn_export_action)
         val btnShare: Button = exportView.findViewById(R.id.btn_share_action)
         val composeSettings: ComposeView = exportView.findViewById(R.id.compose_pdf_settings)
+        exportView.findViewById<Switch>(R.id.switch_embed_recognized_handwriting).apply {
+            isChecked =
+                com.alexdremov.notate.data.PreferencesManager
+                    .shouldEmbedRecognizedHandwriting(context)
+            setOnCheckedChangeListener { _, checked ->
+                com.alexdremov.notate.data.PreferencesManager
+                    .setEmbedRecognizedHandwriting(context, checked)
+            }
+        }
+        exportView.findViewById<Switch>(R.id.switch_review_recognition_export).apply {
+            isChecked =
+                com.alexdremov.notate.data.PreferencesManager
+                    .shouldReviewRecognitionBeforeExport(context)
+            setOnCheckedChangeListener { _, checked ->
+                com.alexdremov.notate.data.PreferencesManager
+                    .setReviewRecognitionBeforeExport(context, checked)
+            }
+        }
 
         val updateVisibility = {
             val isBitmap = rgMode.checkedRadioButtonId == R.id.rb_bitmap
-            composeSettings.visibility = if (isBitmap) View.VISIBLE else View.GONE
+            composeSettings.visibility = View.VISIBLE
         }
 
         rgMode.setOnCheckedChangeListener { _, _ -> updateVisibility() }
@@ -393,6 +538,108 @@ class SettingsSidebarController(
             val isVector = rgMode.checkedRadioButtonId == R.id.rb_vector
             onExportRequest(ExportAction.Share(isVector))
         }
+    }
+
+    private fun showTextRecognitionMenu() {
+        contentFrame.removeAllViews()
+        tvTitle.text = "Text recognition & search"
+        btnBack.visibility = View.VISIBLE
+
+        val root =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                val padding = (16 * resources.displayMetrics.density).toInt()
+                setPadding(padding, padding, padding, padding)
+            }
+        root.addView(TextView(context).apply { text = "Handwriting recognition provider" })
+        val providers = com.alexdremov.notate.data.RecognitionProviderId.values()
+        val providerSpinner =
+            Spinner(context).apply {
+                adapter =
+                    ArrayAdapter(
+                        context,
+                        android.R.layout.simple_spinner_item,
+                        listOf("PP-OCR", "ML Kit Digital Ink"),
+                    ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                setSelection(
+                    providers.indexOf(
+                        com.alexdremov.notate.data.PreferencesManager
+                            .getDefaultRecognitionProvider(context),
+                    ),
+                )
+                onItemSelectedListener =
+                    object : AdapterView.OnItemSelectedListener {
+                        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                            com.alexdremov.notate.data.PreferencesManager
+                                .setDefaultRecognitionProvider(context, providers[position])
+                        }
+
+                        override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                    }
+            }
+        root.addView(providerSpinner)
+
+        root.addView(TextView(context).apply { text = "Recognition mode" })
+        val modes = com.alexdremov.notate.data.RecognitionMode.values()
+        root.addView(
+            Spinner(context).apply {
+                adapter =
+                    ArrayAdapter(
+                        context,
+                        android.R.layout.simple_spinner_item,
+                        listOf("Use Default Provider", "Compare Installed Providers"),
+                    ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                setSelection(
+                    modes.indexOf(
+                        com.alexdremov.notate.data.PreferencesManager
+                            .getRecognitionMode(context),
+                    ),
+                )
+                onItemSelectedListener =
+                    object : AdapterView.OnItemSelectedListener {
+                        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                            com.alexdremov.notate.data.PreferencesManager
+                                .setRecognitionMode(context, modes[position])
+                        }
+
+                        override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                    }
+            },
+        )
+
+        val language =
+            EditText(context).apply {
+                hint = "Language tag (for example en-US or zh-CN)"
+                setText(
+                    com.alexdremov.notate.data.PreferencesManager
+                        .getMlKitLanguageTag(context),
+                )
+            }
+        root.addView(language)
+        root.addView(
+            Button(context).apply {
+                text = "Download selected provider model"
+                setOnClickListener {
+                    val languageTag = language.text.toString().trim()
+                    if (languageTag.isEmpty()) return@setOnClickListener
+                    com.alexdremov.notate.data.PreferencesManager.setMlKitLanguageTag(context, languageTag)
+                    val provider =
+                        com.alexdremov.notate.ocr.TextRecognitionFeature
+                            .get(context)
+                            .providers
+                            .default()
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                        runCatching { provider.downloadModel(languageTag) }
+                            .onSuccess {
+                                Toast.makeText(context, "Model ready for offline recognition", Toast.LENGTH_SHORT).show()
+                            }.onFailure {
+                                Toast.makeText(context, "Model download failed: ${it.localizedMessage}", Toast.LENGTH_LONG).show()
+                            }
+                    }
+                }
+            },
+        )
+        contentFrame.addView(root)
     }
 
     private fun showDebugMenu() {
@@ -479,6 +726,73 @@ class SettingsSidebarController(
 
         debugView.findViewById<View>(R.id.btn_debug_three_finger_tap).setOnClickListener {
             onDebugThreeFingerTap()
+        }
+
+        val highlighterStrategies = com.alexdremov.notate.data.HighlighterCommitStrategy.values()
+        debugView.findViewById<Spinner>(R.id.spinner_debug_highlighter_strategy).apply {
+            adapter =
+                ArrayAdapter(
+                    context,
+                    android.R.layout.simple_spinner_item,
+                    highlighterStrategies.map { it.name.lowercase().replaceFirstChar(Char::uppercase) },
+                ).also {
+                    it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                }
+            setSelection(
+                highlighterStrategies.indexOf(
+                    com.alexdremov.notate.data.PreferencesManager
+                        .getHighlighterCommitStrategy(context),
+                ),
+            )
+            onItemSelectedListener =
+                object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(
+                        parent: AdapterView<*>?,
+                        view: View?,
+                        position: Int,
+                        id: Long,
+                    ) {
+                        com.alexdremov.notate.data.PreferencesManager
+                            .setHighlighterCommitStrategy(context, highlighterStrategies[position])
+                    }
+
+                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                }
+        }
+        val highlighterMetrics =
+            com.alexdremov.notate.util.HighlighterCommitMetrics
+                .snapshot()
+        debugView.findViewById<TextView>(R.id.tv_debug_highlighter_metrics).text =
+            if (highlighterMetrics.instrumentationAvailable) {
+                "Session: last %.1f ms · avg %.1f ms · worst %.1f ms\nTiles: last %d · total %d"
+                    .format(
+                        highlighterMetrics.lastMilliseconds,
+                        highlighterMetrics.averageMilliseconds,
+                        highlighterMetrics.worstMilliseconds,
+                        highlighterMetrics.lastRegeneratedTiles,
+                        highlighterMetrics.totalRegeneratedTiles,
+                    )
+            } else {
+                "Metrics hidden: instrumentation overhead exceeded 1 ms."
+            }
+
+        debugView.findViewById<Switch>(R.id.switch_debug_recognition).apply {
+            isChecked =
+                com.alexdremov.notate.data.PreferencesManager
+                    .isRecognitionDebugEnabled(context)
+            setOnCheckedChangeListener { _, isChecked ->
+                com.alexdremov.notate.data.PreferencesManager
+                    .setRecognitionDebugEnabled(context, isChecked)
+            }
+        }
+        debugView.findViewById<View>(R.id.btn_debug_clear_recognition).setOnClickListener {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                com.alexdremov.notate.ocr.TextRecognitionFeature
+                    .get(context)
+                    .diagnostics
+                    .clear()
+                Toast.makeText(context, "Recognition diagnostics cleared", Toast.LENGTH_SHORT).show()
+            }
         }
 
         val spinnerLogLevel: Spinner = debugView.findViewById(R.id.spinner_debug_log_level)

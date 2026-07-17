@@ -122,6 +122,7 @@ class ProjectRepository(
         if (success) {
             indexManager.updateIndex(getProvider(path))
             documentIndexIntegration.invalidatePaths(path, rebuild = false)
+            NotebookChangeNotifier.notify(context, path)
         }
         return success
     }
@@ -136,6 +137,7 @@ class ProjectRepository(
             // A folder rename changes every descendant path, and UUID-less legacy notes
             // cannot be reconciled safely. Remove the old rows and rebuild from the new paths.
             documentIndexIntegration.invalidatePaths(path, rebuild = true)
+            NotebookChangeNotifier.notify(context, path)
         }
         return success
     }
@@ -145,7 +147,10 @@ class ProjectRepository(
         parentPath: String?,
     ): Boolean {
         val success = getProvider(path).duplicateItem(path, parentPath)
-        if (success) indexManager.updateIndex(getProvider(path))
+        if (success) {
+            indexManager.updateIndex(getProvider(path))
+            NotebookChangeNotifier.notify(context, path)
+        }
         return success
     }
 

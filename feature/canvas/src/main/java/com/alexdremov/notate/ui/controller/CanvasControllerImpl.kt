@@ -64,6 +64,7 @@ class CanvasControllerImpl(
     override suspend fun commitStroke(stroke: Stroke) {
         val added = model.addStroke(stroke)
         if (added != null) {
+            model.markRecognitionStaleIntersecting(added.bounds)
             withContext(Dispatchers.Main) {
                 renderer.updateTilesWithStroke(added)
                 onContentChangedListener?.invoke()
@@ -80,6 +81,7 @@ class CanvasControllerImpl(
 
             val added = model.addStroke(stroke)
             if (added != null) {
+                model.markRecognitionStaleIntersecting(added.bounds)
                 batch.add(added)
             }
 
@@ -311,11 +313,18 @@ class CanvasControllerImpl(
             if (selectionManager.hasSelection()) {
                 val bounds = selectionManager.getTransformedBounds()
                 val ids = selectionManager.getSelectedIds()
+                val removedStrokeIds =
+                    if (model.handwritingLines.value.isEmpty()) {
+                        emptySet()
+                    } else {
+                        fetchSelectedItems().filterIsInstance<Stroke>().mapTo(mutableSetOf(), Stroke::strokeId)
+                    }
                 selectionManager.clearSelection()
                 updatePinnedRegions()
 
                 withContext(Dispatchers.Default) {
                     model.deleteItemsByIds(bounds, ids, context.cacheDir)
+                    model.removeRecognitionForStrokes(removedStrokeIds)
                 }
 
                 withContext(Dispatchers.Main) {
@@ -1095,6 +1104,12 @@ class CanvasControllerImpl(
             val originalBounds = selectionManager.getOriginalBounds()
             val transform = selectionManager.getTransform()
             val ids = selectionManager.getSelectedIds()
+            val transformedStrokeIds =
+                if (model.handwritingLines.value.isEmpty()) {
+                    emptySet()
+                } else {
+                    fetchSelectedItems().filterIsInstance<Stroke>().mapTo(mutableSetOf(), Stroke::strokeId)
+                }
 
             if (transform.isIdentity && shouldReselect) {
                 // No move, just return
@@ -1110,6 +1125,7 @@ class CanvasControllerImpl(
             } else {
                 commitStandardSelectionMove(ids, transform, shouldReselect)
             }
+            model.updateRecognitionForTransform(transformedStrokeIds, transform)
         }
     }
 

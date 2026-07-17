@@ -32,11 +32,18 @@ data class InputSettingsState(
     val palmRejection: Boolean,
     val twoFingerTapAction: TwoFingerTapAction,
     val stylusButtonAction: StylusButtonAction,
+    val shapeRotationCorrection: Boolean = true,
+    val shapeRotationPreset: String = "NORMAL",
+    val fixedPagePinchZoom: Boolean = true,
+    val fixedPageObjectRotation: Boolean = true,
 )
 
 data class InterfaceSettingsState(
     val collapsibleToolbar: Boolean,
     val collapseTimeout: Float,
+    val pagePreviewRailMode: String = "OFF",
+    val pagePreviewRailSide: String = "LEFT",
+    val pagePreviewRailSize: String = "COMPACT",
 )
 
 @Composable
@@ -51,6 +58,10 @@ fun InputSettingsPanel(
     onShapeDelayFinished: () -> Unit,
     onTwoFingerTapChange: (TwoFingerTapAction) -> Unit,
     onStylusButtonChange: (StylusButtonAction) -> Unit,
+    onShapeRotationCorrectionChange: (Boolean) -> Unit = {},
+    onShapeRotationPresetChange: (String) -> Unit = {},
+    onFixedPagePinchZoomChange: (Boolean) -> Unit = {},
+    onFixedPageObjectRotationChange: (Boolean) -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         SettingsToggle(
@@ -75,6 +86,24 @@ fun InputSettingsPanel(
 
         if (state.shapeEnabled) {
             Column(Modifier.padding(start = 16.dp)) {
+                SettingsToggle(
+                    title = "Correct shape rotation",
+                    checked = state.shapeRotationCorrection,
+                    onCheckedChange = onShapeRotationCorrectionChange,
+                )
+                if (state.shapeRotationCorrection) {
+                    SettingsRadioGroup(
+                        title = "Correction tolerance",
+                        options =
+                            listOf(
+                                "TIGHT" to "Tight (2°)",
+                                "NORMAL" to "Normal (4°)",
+                                "LOOSE" to "Loose (6°)",
+                            ),
+                        selected = state.shapeRotationPreset,
+                        onSelect = onShapeRotationPresetChange,
+                    )
+                }
                 Text(
                     text = "Hold stylus (${state.shapeDelay.toLong()} ms)",
                     style = MaterialTheme.typography.bodySmall,
@@ -104,6 +133,18 @@ fun InputSettingsPanel(
             title = "Axis Locking",
             checked = state.axisLocking,
             onCheckedChange = onAxisChange,
+        )
+
+        HorizontalDivider()
+        SettingsToggle(
+            title = "Allow pinch zoom on fixed pages",
+            checked = state.fixedPagePinchZoom,
+            onCheckedChange = onFixedPagePinchZoomChange,
+        )
+        SettingsToggle(
+            title = "Allow object rotation on fixed pages",
+            checked = state.fixedPageObjectRotation,
+            onCheckedChange = onFixedPageObjectRotationChange,
         )
 
         HorizontalDivider()
@@ -140,6 +181,9 @@ fun InterfaceSettingsPanel(
     onCollapsibleChange: (Boolean) -> Unit,
     onTimeoutChange: (Float) -> Unit,
     onTimeoutFinished: () -> Unit,
+    onPagePreviewRailModeChange: (String) -> Unit = {},
+    onPagePreviewRailSideChange: (String) -> Unit = {},
+    onPagePreviewRailSizeChange: (String) -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         SettingsToggle(
@@ -167,6 +211,33 @@ fun InterfaceSettingsPanel(
                         ),
                 )
             }
+        }
+
+        HorizontalDivider()
+        SettingsRadioGroup(
+            title = "Page Preview Rail",
+            options =
+                listOf(
+                    "OFF" to "Off",
+                    "AUTO" to "Auto",
+                    "PINNED" to "Pinned",
+                ),
+            selected = state.pagePreviewRailMode,
+            onSelect = onPagePreviewRailModeChange,
+        )
+        if (state.pagePreviewRailMode != "OFF") {
+            SettingsRadioGroup(
+                title = "Rail side",
+                options = listOf("LEFT" to "Left", "RIGHT" to "Right"),
+                selected = state.pagePreviewRailSide,
+                onSelect = onPagePreviewRailSideChange,
+            )
+            SettingsRadioGroup(
+                title = "Rail size",
+                options = listOf("COMPACT" to "Compact (112 dp)", "LARGE" to "Large (168 dp)"),
+                selected = state.pagePreviewRailSize,
+                onSelect = onPagePreviewRailSizeChange,
+            )
         }
     }
 }

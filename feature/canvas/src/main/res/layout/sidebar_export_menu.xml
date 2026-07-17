@@ -67,6 +67,19 @@
         android:layout_height="wrap_content"
         android:layout_marginBottom="16dp" />
 
+    <Switch
+        android:id="@+id/switch_embed_recognized_handwriting"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:checked="true"
+        android:text="Embed recognized handwriting" />
+
+    <Switch
+        android:id="@+id/switch_review_recognition_export"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Review recognition before export" />
+
     <Button
         android:id="@+id/btn_export_action"
         android:layout_width="match_parent"

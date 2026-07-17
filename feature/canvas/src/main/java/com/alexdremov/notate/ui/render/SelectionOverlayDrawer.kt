@@ -19,6 +19,7 @@ class SelectionOverlayDrawer(
     private val selectionManager: SelectionManager,
     private val renderer: CanvasRenderer,
 ) {
+    var showRotationHandle: Boolean = true
     private val boxPaint =
         Paint().apply {
             color = Color.BLUE
@@ -155,7 +156,9 @@ class SelectionOverlayDrawer(
             canvas.drawRect(mx - squareSize, my - squareSize, mx + squareSize, my + squareSize, handleBorderPaint)
         }
 
-        drawRotateHandle(canvas, screenCorners, handleRadius)
+        if (showRotationHandle) {
+            drawRotateHandle(canvas, screenCorners, handleRadius)
+        }
     }
 
     private fun drawRotateHandle(

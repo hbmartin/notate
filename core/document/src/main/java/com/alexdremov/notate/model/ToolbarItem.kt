@@ -55,6 +55,7 @@ enum class ActionType {
     UNDO,
     REDO,
     INSERT_IMAGE,
+    ZOOM_TO_FIT,
 }
 
 @Serializable

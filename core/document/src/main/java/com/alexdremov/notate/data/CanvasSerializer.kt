@@ -7,6 +7,7 @@ import com.alexdremov.notate.model.CanvasImage
 import com.alexdremov.notate.model.CanvasItem
 import com.alexdremov.notate.model.LinkItem
 import com.alexdremov.notate.model.Stroke
+import com.alexdremov.notate.model.StrokeOrigin
 import com.alexdremov.notate.model.Tag
 import com.alexdremov.notate.model.TextItem
 import com.alexdremov.notate.util.Logger
@@ -53,6 +54,8 @@ object CanvasSerializer {
             style = item.style,
             strokeOrder = item.strokeOrder,
             zIndex = item.zIndex,
+            strokeId = item.strokeId,
+            origin = item.origin,
         )
     }
 
@@ -260,6 +263,8 @@ object CanvasSerializer {
             bounds = bounds,
             strokeOrder = sData.strokeOrder,
             zIndex = sData.zIndex,
+            strokeId = sData.strokeId.ifBlank { java.util.UUID.randomUUID().toString() },
+            origin = sData.origin,
         )
     }
 
@@ -329,6 +334,7 @@ object CanvasSerializer {
         uuid: String? = null,
     ): CanvasData =
         CanvasData(
+            version = 4,
             canvasType = canvasType,
             pageWidth = pageWidth,
             pageHeight = pageHeight,

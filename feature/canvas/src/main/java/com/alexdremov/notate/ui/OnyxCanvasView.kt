@@ -1,6 +1,7 @@
 package com.alexdremov.notate.ui
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
@@ -29,6 +30,7 @@ import com.alexdremov.notate.ui.controller.CanvasControllerImpl
 import com.alexdremov.notate.ui.controller.ViewportController
 import com.alexdremov.notate.ui.input.PenInputHandler
 import com.alexdremov.notate.ui.interaction.ViewportInteractor
+import com.alexdremov.notate.ui.interaction.ZoomToFitCalculator
 import com.alexdremov.notate.ui.render.CanvasRenderer
 import com.alexdremov.notate.ui.render.RenderQuality
 import com.alexdremov.notate.ui.render.SelectionOverlayDrawer
@@ -231,7 +233,10 @@ class OnyxCanvasView
                     viewScope,
                     matrix,
                     inverseMatrix,
-                    onStrokeStarted = { onStrokeStarted?.invoke() },
+                    onStrokeStarted = {
+                        isThreeFingerTapCheck = false
+                        onStrokeStarted?.invoke()
+                    },
                     onStrokeFinished = {
                         minimapDrawer?.setDirty()
                         drawContent()
@@ -428,7 +433,14 @@ class OnyxCanvasView
             val isStylus = event.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS
             if (isStylus) return false // Handled by RawInputCallback
 
-            if (fingerTouchRouter.route(event, isReadOnly, palmRejectionEnabled)) {
+            if (
+                fingerTouchRouter.route(
+                    event,
+                    isReadOnly,
+                    palmRejectionEnabled,
+                    penInputHandler.isStrokeActive(),
+                )
+            ) {
                 if (event.actionMasked != MotionEvent.ACTION_MOVE) {
                     logGestureDebug("Palm rejection consumed action=${event.actionMasked}, pointers=${event.pointerCount}")
                 }
@@ -452,6 +464,8 @@ class OnyxCanvasView
                     }
                 } else if (action == MotionEvent.ACTION_POINTER_DOWN) {
                     selectionInteractor.onPointerDown(event)
+                } else if (action == MotionEvent.ACTION_POINTER_UP) {
+                    selectionInteractor.onPointerUp(event)
                 } else if (action == MotionEvent.ACTION_MOVE) {
                     if (selectionInteractor.onMove(event)) {
                         return true
@@ -599,7 +613,8 @@ class OnyxCanvasView
         }
 
         private fun logGestureDebug(message: String) {
-            if (CanvasConfig.DEBUG_LOG_GESTURES) {
+            val debuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+            if (debuggable && CanvasConfig.DEBUG_LOG_GESTURES) {
                 Logger.d("GestureDebug", message)
             }
         }
@@ -806,6 +821,65 @@ class OnyxCanvasView
 
         fun getCurrentScale() = viewportInteractor.getCurrentScale()
 
+        fun getZoomToFitScale(): Float {
+            if (width <= 0 || height <= 0) return viewportInteractor.getCurrentScale()
+            val bounds =
+                if (canvasModel.canvasType == CanvasType.FIXED_PAGES) {
+                    val values = FloatArray(9)
+                    matrix.getValues(values)
+                    val scale = viewportInteractor.getCurrentScale().coerceAtLeast(0.01f)
+                    val viewportTop = -values[Matrix.MTRANS_Y] / scale
+                    val pageStride = canvasModel.pageHeight + CanvasConfig.PAGE_SPACING
+                    val pageIndex = kotlin.math.floor(viewportTop / pageStride).toInt().coerceAtLeast(0)
+                    canvasModel.getPageBounds(pageIndex)
+                } else {
+                    canvasModel.getContentBounds().takeUnless(RectF::isEmpty)
+                }
+            return ZoomToFitCalculator.calculate(bounds, width, height).scale
+        }
+
+        /**
+         * Fits the current fixed page or all infinite-canvas content without animation.
+         * Active selection state is intentionally ignored because model content bounds are used.
+         */
+        fun zoomToFit(): Float {
+            if (width <= 0 || height <= 0) {
+                post { zoomToFit() }
+                return viewportInteractor.getCurrentScale()
+            }
+
+            val targetScale = getZoomToFitScale()
+            val bounds =
+                if (canvasModel.canvasType == CanvasType.FIXED_PAGES) {
+                    val values = FloatArray(9)
+                    matrix.getValues(values)
+                    val viewportTop = -values[Matrix.MTRANS_Y] / viewportInteractor.getCurrentScale().coerceAtLeast(0.01f)
+                    val pageStride = canvasModel.pageHeight + CanvasConfig.PAGE_SPACING
+                    canvasModel.getPageBounds(kotlin.math.floor(viewportTop / pageStride).toInt().coerceAtLeast(0))
+                } else {
+                    canvasModel.getContentBounds().takeUnless(RectF::isEmpty)
+                }
+            val fit = ZoomToFitCalculator.calculate(bounds, width, height).copy(scale = targetScale)
+            matrix.setValues(
+                floatArrayOf(
+                    fit.scale,
+                    0f,
+                    fit.translationX,
+                    0f,
+                    fit.scale,
+                    fit.translationY,
+                    0f,
+                    0f,
+                    1f,
+                ),
+            )
+            viewportInteractor.setScale(fit.scale)
+            onViewportChanged?.invoke()
+            updateTouchHelperTool()
+            invalidateCanvas()
+            return fit.scale
+        }
+
         fun focusSearchMatch(bounds: RectF) {
             if (width <= 0 || height <= 0) {
                 post { focusSearchMatch(bounds) }
@@ -853,6 +927,7 @@ class OnyxCanvasView
             matrix.postTranslate(data.offsetX, data.offsetY)
             viewportInteractor.setScale(data.zoomLevel)
             viewportInteractor.setCanvasWidth(data.pageWidth)
+            applyFixedPageInteractionPreferences()
 
             canvasRenderer.updateLayoutStrategy()
             canvasRenderer.clearTiles()
@@ -861,6 +936,16 @@ class OnyxCanvasView
 
         fun setFixedPageCenterHorizontal(enabled: Boolean) {
             viewportInteractor.setFixedPageCenterHorizontal(enabled)
+        }
+
+        fun applyFixedPageInteractionPreferences() {
+            val fixedPage = canvasModel.canvasType == CanvasType.FIXED_PAGES
+            val allowPinch = !fixedPage || PreferencesManager.isFixedPagePinchZoomEnabled(context)
+            val allowRotation = !fixedPage || PreferencesManager.isFixedPageObjectRotationEnabled(context)
+            viewportInteractor.setAllowPinchZoom(allowPinch)
+            selectionInteractor.setObjectRotationAllowed(allowRotation)
+            selectionOverlayDrawer.showRotationHandle = allowRotation
+            invalidateCanvas()
         }
 
         fun setTool(tool: PenTool) {
@@ -1007,7 +1092,65 @@ class OnyxCanvasView
             }
         }
 
-        private suspend fun recognizeSelection() {
+        private suspend fun ensureRecognitionModel(
+            provider: com.alexdremov.notate.hwr.HandwritingRecognitionProvider,
+            languageTag: String,
+        ): Boolean {
+            if (provider.isModelAvailable(languageTag)) return true
+            val approved =
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+                        val dialog =
+                            android.app.AlertDialog.Builder(context)
+                                .setTitle("Download ${provider.displayName} model?")
+                                .setMessage(
+                                    "The $languageTag handwriting model is required. Recognition runs offline after download.",
+                                ).setPositiveButton("Download") { _, _ ->
+                                    if (continuation.isActive) continuation.resume(true)
+                                }.setNegativeButton("Cancel") { _, _ ->
+                                    if (continuation.isActive) continuation.resume(false)
+                                }.setOnCancelListener {
+                                    if (continuation.isActive) continuation.resume(false)
+                                }.create()
+                        continuation.invokeOnCancellation { dialog.dismiss() }
+                        dialog.show()
+                    }
+                }
+            if (!approved) return false
+            android.widget.Toast
+                .makeText(context, "Downloading ${provider.displayName} model…", android.widget.Toast.LENGTH_LONG)
+                .show()
+            provider.downloadModel(languageTag)
+            return true
+        }
+
+        private fun chooseRetryProvider() {
+            viewScope.launch {
+                val languageTag =
+                    com.alexdremov.notate.data.PreferencesManager
+                        .getMlKitLanguageTag(context)
+                val providers =
+                    textRecognition.providers
+                        .all()
+                        .filter { runCatching { it.isModelAvailable(languageTag) }.getOrDefault(false) }
+                if (providers.isEmpty()) {
+                    android.widget.Toast
+                        .makeText(context, "No recognition provider is installed", android.widget.Toast.LENGTH_SHORT)
+                        .show()
+                    return@launch
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.app.AlertDialog.Builder(context)
+                        .setTitle("Retry with provider")
+                        .setItems(providers.map { it.displayName }.toTypedArray()) { _, index ->
+                            viewScope.launch { recognizeSelection(providers[index].id) }
+                        }.setNegativeButton("Cancel", null)
+                        .show()
+                }
+            }
+        }
+
+        private suspend fun recognizeSelection(providerIdOverride: String? = null) {
             if (isOcrRunning) return
             val selectionBounds = canvasController.getSelectionManager().getTransformedBounds()
             val strokes = canvasController.getSelectedStrokesForOcr()
@@ -1018,47 +1161,174 @@ class OnyxCanvasView
 
             isOcrRunning = true
             try {
-                if (!ensureOcrModelsInstalled()) return
+                val languageTag =
+                    com.alexdremov.notate.data.PreferencesManager
+                        .getMlKitLanguageTag(context)
+                val providers =
+                    if (providerIdOverride != null) {
+                        listOfNotNull(textRecognition.providers.get(providerIdOverride))
+                    } else if (
+                        com.alexdremov.notate.data.PreferencesManager.getRecognitionMode(context) ==
+                        com.alexdremov.notate.data.RecognitionMode.COMPARE_INSTALLED
+                    ) {
+                        textRecognition.providers
+                            .all()
+                            .filter { runCatching { it.isModelAvailable(languageTag) }.getOrDefault(false) }
+                    } else {
+                        listOf(textRecognition.providers.default())
+                    }
+                if (providers.isEmpty()) {
+                    chooseRetryProvider()
+                    return
+                }
+                if (providers.size == 1 && !ensureRecognitionModel(providers.first(), languageTag)) return
                 android.widget.Toast.makeText(context, "Recognizing text…", android.widget.Toast.LENGTH_SHORT).show()
-                val blocks = textRecognition.recognize(strokes)
-                val recognizedText = textRecognition.orderedText(blocks)
-                if (recognizedText.isEmpty()) {
+                val groups = com.alexdremov.notate.hwr.HandwritingLineGrouper.group(strokes)
+                val candidatePairs =
+                    providers.mapNotNull { provider ->
+                        val groupCandidates =
+                            groups.map { group ->
+                                textRecognition
+                                    .recognizeCandidates(group.strokes, provider.id, languageTag)
+                                    .firstOrNull()
+                            }
+                        if (groupCandidates.any { it == null }) {
+                            null
+                        } else {
+                            val complete = groupCandidates.filterNotNull()
+                            val confidence =
+                                complete.mapNotNull { it.confidence }.takeIf { it.size == complete.size }?.average()?.toFloat()
+                            provider to
+                                com.alexdremov.notate.hwr.RecognitionCandidate(
+                                    text = complete.joinToString("\n") { it.text },
+                                    confidence = confidence,
+                                    bounds = selectionBounds,
+                                )
+                        }
+                    }
+                val existing =
+                    canvasModel.handwritingLines.value.filter { line ->
+                        line.sourceStrokeIds.any(strokes.map(com.alexdremov.notate.model.Stroke::strokeId).toSet()::contains)
+                    }
+                val initialText =
+                    existing
+                        .sortedWith(
+                            compareByDescending<com.alexdremov.notate.data.HandwritingLine> { it.userEdited }
+                                .thenBy { it.geometry.top }
+                                .thenBy { it.geometry.left },
+                        ).joinToString("\n") { it.acceptedText }
+                        .ifBlank { candidatePairs.firstOrNull()?.second?.text.orEmpty() }
+                if (initialText.isBlank()) {
                     android.widget.Toast.makeText(context, "No text recognized", android.widget.Toast.LENGTH_SHORT).show()
                     return
                 }
 
-                val textY =
-                    textRecognition.insertionY(
-                        selection = selectionBounds,
-                        text = recognizedText,
-                        fontSize = 24f,
-                        fixedPageHeight = if (canvasModel.canvasType == com.alexdremov.notate.data.CanvasType.FIXED_PAGES) canvasModel.pageHeight else null,
-                        pageSpacing = com.alexdremov.notate.config.CanvasConfig.PAGE_SPACING,
-                    )
-
-                com.alexdremov.notate.ui.dialog.TextEditDialog(
-                    context,
-                    recognizedText,
-                    24f,
-                    android.graphics.Color.BLACK,
-                ) { confirmedText ->
-                    if (confirmedText.isNotBlank()) {
+                val sourceCounts =
+                    canvasModel.handwritingLines.value
+                        .flatMap { it.sourceStrokeIds }
+                        .groupingBy { it }
+                        .eachCount()
+                val sharedStrokeWarning =
+                    strokes.any { (sourceCounts[it.strokeId] ?: 0) > 1 }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    com.alexdremov.notate.ui.dialog.HandwritingReviewDialog(
+                        context = context,
+                        initialText = initialText,
+                        candidates =
+                            candidatePairs.map { (provider, candidate) ->
+                                "${provider.displayName}: ${candidate.text}" to candidate.text
+                            },
+                        providerSummary = providers.joinToString(" · ") { it.displayName },
+                        sharedStrokeWarning = sharedStrokeWarning,
+                        onKeep = { reviewedText, candidateIndex ->
+                            val chosen = candidatePairs.getOrNull(candidateIndex) ?: candidatePairs.firstOrNull()
+                            val reviewedLines = reviewedText.lines().filter(String::isNotBlank)
+                            viewScope.launch {
+                                groups.forEachIndexed { index, group ->
+                                    val groupStrokeIds = group.strokes.map(com.alexdremov.notate.model.Stroke::strokeId)
+                                    val previous =
+                                        existing.firstOrNull { it.sourceStrokeIds.toSet() == groupStrokeIds.toSet() }
+                                    val acceptedText =
+                                        reviewedLines.getOrNull(index)
+                                            ?: if (groups.size == 1) reviewedText else return@forEachIndexed
+                                    val provider = chosen?.first ?: textRecognition.providers.default()
+                                    val candidate = chosen?.second
+                                    canvasModel.upsertHandwritingLine(
+                                        com.alexdremov.notate.data.HandwritingLine(
+                                            id = previous?.id ?: java.util.UUID.randomUUID().toString(),
+                                            geometry =
+                                                com.alexdremov.notate.data.HandwritingLineGeometry(
+                                                    group.bounds.left,
+                                                    group.bounds.top,
+                                                    group.bounds.right,
+                                                    group.bounds.bottom,
+                                                ),
+                                            sourceStrokeIds = groupStrokeIds,
+                                            sourceFingerprint =
+                                                com.alexdremov.notate.hwr.HwrStrokeMapper
+                                                    .fingerprint(group.strokes),
+                                            acceptedText = acceptedText,
+                                            provenance =
+                                                com.alexdremov.notate.data.RecognitionProvenance(
+                                                    providerId = provider.id,
+                                                    providerRevision = provider.revision,
+                                                    languageTag = languageTag,
+                                                ),
+                                            confidence = candidate?.confidence,
+                                            userEdited = candidate?.text?.lines()?.getOrNull(index) != acceptedText,
+                                            state = com.alexdremov.notate.data.TranscriptionState.ACCEPTED,
+                                        ),
+                                    )
+                                    if (candidate != null) {
+                                        textRecognition.diagnostics.record(provider, listOf(candidate), acceptedText)
+                                    }
+                                }
+                                onContentChanged?.invoke()
+                            }
+                        },
+                        onReplace = { reviewedText, _ ->
+                            val textY =
+                                textRecognition.insertionY(
+                                    selection = selectionBounds,
+                                    text = reviewedText,
+                                    fontSize = 24f,
+                                    fixedPageHeight =
+                                        if (canvasModel.canvasType == com.alexdremov.notate.data.CanvasType.FIXED_PAGES) {
+                                            canvasModel.pageHeight
+                                        } else {
+                                            null
+                                        },
+                                    pageSpacing = com.alexdremov.notate.config.CanvasConfig.PAGE_SPACING,
+                                )
                         viewScope.launch {
+                            canvasController.startBatchSession()
                             canvasController.addText(
-                                confirmedText,
+                                reviewedText,
                                 selectionBounds.left,
                                 textY,
                                 24f,
                                 android.graphics.Color.BLACK,
                             )
+                            canvasController.deleteSelection()
+                            canvasController.endBatchSession()
                         }
-                    }
-                }.show()
+                        },
+                        onRetry = ::chooseRetryProvider,
+                    ).show()
+                }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                com.alexdremov.notate.util.Logger.e("PaddleOCR", "Text recognition failed", error, showToUser = true)
-                android.widget.Toast.makeText(context, "Text recognition is unavailable", android.widget.Toast.LENGTH_LONG).show()
+                com.alexdremov.notate.util.Logger.e("HandwritingRecognition", "Text recognition failed", error)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    android.app.AlertDialog.Builder(context)
+                        .setTitle("Recognition failed")
+                        .setMessage(error.localizedMessage ?: "The provider could not recognize this selection.")
+                        .setPositiveButton("Retry") { _, _ -> viewScope.launch { recognizeSelection(providerIdOverride) } }
+                        .setNeutralButton("Choose provider") { _, _ -> chooseRetryProvider() }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
             } finally {
                 isOcrRunning = false
             }

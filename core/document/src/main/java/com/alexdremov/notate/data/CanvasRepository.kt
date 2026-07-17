@@ -296,7 +296,7 @@ class CanvasRepository(
                             val storage = RegionStorage(sessionDir)
                             storage.init()
 
-                            val metadata = CanvasData(version = 3, regionSize = CanvasConfig.DEFAULT_REGION_SIZE)
+                            val metadata = CanvasData(version = 4, regionSize = CanvasConfig.DEFAULT_REGION_SIZE)
                             val manifestFile = File(sessionDir, "manifest.bin")
                             val metaBytes = ProtoBuf.encodeToByteArray(CanvasData.serializer(), metadata)
                             manifestFile.writeBytes(metaBytes)
@@ -321,7 +321,7 @@ class CanvasRepository(
                                 val storage = RegionStorage(sessionDir)
                                 storage.init()
 
-                                val metadata = CanvasData(version = 3, regionSize = CanvasConfig.DEFAULT_REGION_SIZE)
+                                val metadata = CanvasData(version = 4, regionSize = CanvasConfig.DEFAULT_REGION_SIZE)
                                 val manifestFile = File(sessionDir, "manifest.bin")
                                 val metaBytes = ProtoBuf.encodeToByteArray(CanvasData.serializer(), metadata)
                                 manifestFile.writeBytes(metaBytes)
@@ -364,6 +364,11 @@ class CanvasRepository(
                                             sourceFile,
                                             "manifest.bin",
                                             File(sessionDir, "manifest.bin"),
+                                        )
+                                        com.alexdremov.notate.util.ZipUtils.extractFile(
+                                            sourceFile,
+                                            RecognitionStore.FILE_NAME,
+                                            File(sessionDir, RecognitionStore.FILE_NAME),
                                         )
 
                                         metadata = manifest
@@ -652,7 +657,12 @@ class CanvasRepository(
                 snapshot.mkdirs()
                 session.sessionDir.listFiles()
                     .orEmpty()
-                    .filter { it.isFile && (it.name == "manifest.bin" || INDEX_REGION_FILE.matches(it.name)) }
+                    .filter {
+                        it.isFile &&
+                            (it.name == "manifest.bin" ||
+                                it.name == RecognitionStore.FILE_NAME ||
+                                INDEX_REGION_FILE.matches(it.name))
+                    }
                     .forEach { source -> source.copyTo(File(snapshot, source.name), overwrite = true) }
                 check(File(snapshot, "manifest.bin").isFile) { "Document-index snapshot is missing manifest.bin" }
                 IndexSnapshot(snapshot, StorageUtils.getOriginInfo(context, targetPath).first)
@@ -717,10 +727,10 @@ class CanvasRepository(
                                     .randomUUID()
                                     .toString()
                             Logger.i("CanvasRepository", "Generating NEW UUID for canvas: $newUuid")
-                            currentMeta.copy(uuid = newUuid)
+                            currentMeta.copy(version = 4, uuid = newUuid)
                         } else {
                             Logger.d("CanvasRepository", "Using existing UUID for canvas: ${currentMeta.uuid}")
-                            currentMeta
+                            currentMeta.copy(version = 4)
                         }
 
                     // 2. Generate Thumbnail
@@ -732,6 +742,7 @@ class CanvasRepository(
                             metadataWithUuid
                         }
                     session.updateMetadata(metadataWithThumb)
+                    NotebookChangeNotifier.notify(context, path)
 
                     // 3. Save Manifest
                     val manifestFile = File(session.sessionDir, "manifest.bin")

@@ -5,6 +5,8 @@ import com.alexdremov.notate.config.CanvasConfig
 import com.alexdremov.notate.data.CanvasData
 import com.alexdremov.notate.data.CanvasSerializer
 import com.alexdremov.notate.data.CanvasType
+import com.alexdremov.notate.data.HandwritingLine
+import com.alexdremov.notate.data.RecognitionStore
 import com.alexdremov.notate.data.region.RegionManager
 import com.alexdremov.notate.util.StrokeGeometry
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -31,6 +33,10 @@ class InfiniteCanvasModel {
     private val contentBounds = RectF()
     private val _contentBoundsFlow = MutableStateFlow(RectF())
     val contentBoundsFlow: StateFlow<RectF> = _contentBoundsFlow.asStateFlow()
+
+    private val _handwritingLines = MutableStateFlow<List<HandwritingLine>>(emptyList())
+    val handwritingLines: StateFlow<List<HandwritingLine>> = _handwritingLines.asStateFlow()
+    private var recognitionStore: RecognitionStore? = null
 
     private val mutex = Mutex()
 
@@ -90,9 +96,13 @@ class InfiniteCanvasModel {
 
     fun getRegionManager(): RegionManager? = regionManager
 
-    suspend fun initializeSession(manager: RegionManager) {
+    suspend fun initializeSession(
+        manager: RegionManager,
+        recognitionStore: RecognitionStore? = null,
+    ) {
         mutex.withLock {
             regionManager = manager
+            this.recognitionStore = recognitionStore
             val bounds = manager.getContentBounds()
             contentBounds.set(bounds)
             _contentBoundsFlow.value = RectF(bounds)
@@ -105,6 +115,40 @@ class InfiniteCanvasModel {
                 _events.tryEmit(ModelEvent.RegionLoaded(regionBounds))
             }
         }
+        _handwritingLines.value = recognitionStore?.snapshot().orEmpty()
+    }
+
+    suspend fun upsertHandwritingLine(line: HandwritingLine) {
+        recognitionStore?.upsert(line)
+        _handwritingLines.value = recognitionStore?.snapshot().orEmpty()
+    }
+
+    suspend fun removeRecognitionForStrokes(strokeIds: Set<String>) {
+        _handwritingLines.value =
+            recognitionStore?.removeForStrokeIds(strokeIds) ?: _handwritingLines.value
+    }
+
+    suspend fun markRecognitionStaleForStrokes(strokeIds: Set<String>) {
+        _handwritingLines.value =
+            recognitionStore?.markStaleForStrokeIds(strokeIds) ?: _handwritingLines.value
+    }
+
+    suspend fun markRecognitionStaleIntersecting(bounds: RectF) {
+        val affected =
+            _handwritingLines.value
+                .asSequence()
+                .filter { RectF.intersects(it.geometry.toRectF(), bounds) }
+                .flatMap { it.sourceStrokeIds.asSequence() }
+                .toSet()
+        markRecognitionStaleForStrokes(affected)
+    }
+
+    suspend fun updateRecognitionForTransform(
+        strokeIds: Set<String>,
+        matrix: android.graphics.Matrix,
+    ) {
+        _handwritingLines.value =
+            recognitionStore?.applyStrokeTransform(strokeIds, matrix) ?: _handwritingLines.value
     }
 
     suspend fun setBackground(style: BackgroundStyle) {
@@ -306,6 +350,12 @@ class InfiniteCanvasModel {
                 invalidatedBounds = boundsToInvalidate
             }
         }
+        removeRecognitionForStrokes(toRemove.filterIsInstance<Stroke>().mapTo(mutableSetOf(), Stroke::strokeId))
+        markRecognitionStaleForStrokes(
+            pendingReplacements
+                .mapNotNull { (original, _) -> (original as? Stroke)?.strokeId }
+                .toSet(),
+        )
         return invalidatedBounds
     }
 

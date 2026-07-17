@@ -9,17 +9,25 @@ internal class FingerTouchRouter(
     private val onThreeFingerEvent: (MotionEvent) -> Unit,
     private val onTwoFingerEvent: (MotionEvent) -> Unit,
 ) {
+    private var reservedThreeFingerSequence = false
+
     /** Returns true when palm rejection consumed the event before standard touch handling. */
     fun route(
         event: MotionEvent,
         isReadOnly: Boolean,
         palmRejectionEnabled: Boolean,
+        stylusStrokeActive: Boolean = false,
     ): Boolean {
-        if (!isReadOnly) onThreeFingerEvent(event)
+        if (event.pointerCount >= 3) reservedThreeFingerSequence = true
 
-        if (palmRejectionEnabled) return true
+        if (!isReadOnly && !stylusStrokeActive) onThreeFingerEvent(event)
 
-        if (!isReadOnly) onTwoFingerEvent(event)
-        return false
+        val consume = palmRejectionEnabled || reservedThreeFingerSequence
+        if (!consume && !isReadOnly) onTwoFingerEvent(event)
+
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            reservedThreeFingerSequence = false
+        }
+        return consume
     }
 }

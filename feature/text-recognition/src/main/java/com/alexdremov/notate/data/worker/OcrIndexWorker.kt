@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.alexdremov.notate.data.PreferencesManager
-import com.alexdremov.notate.ocr.OcrModelPackManager
 import com.alexdremov.notate.ocr.index.OcrIndexDatabase
 import com.alexdremov.notate.ocr.index.OcrIndexWriter
 import com.alexdremov.notate.util.Logger
@@ -19,9 +18,7 @@ class OcrIndexWorker(
         val sessionPath = inputData.getString(KEY_SESSION_PATH) ?: return Result.failure()
         val cleanupSession = inputData.getBoolean(KEY_CLEANUP_SESSION, false)
         val sessionDir = File(sessionPath)
-        if (!PreferencesManager.isBackgroundOcrIndexingEnabled(applicationContext) ||
-            !OcrModelPackManager.get(applicationContext).isInstalled()
-        ) {
+        if (!PreferencesManager.isBackgroundOcrIndexingEnabled(applicationContext)) {
             if (cleanupSession) sessionDir.deleteRecursively()
             return Result.success()
         }

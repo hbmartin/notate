@@ -15,6 +15,7 @@ data class OcrSearchResult(
     val snippet: String,
     val confidence: Float,
     val bounds: RectF?,
+    val isStaleTranscription: Boolean = false,
 )
 
 class OcrSearchRepository internal constructor(
@@ -57,6 +58,7 @@ class OcrSearchRepository internal constructor(
                     text = row.text,
                     snippet = snippet(row.text, query),
                     confidence = row.confidence,
+                    isStaleTranscription = row.source == OcrTextSource.STALE_HANDWRITING.name,
                     bounds =
                         if (row.left != null && row.top != null && row.right != null && row.bottom != null) {
                             RectF(row.left, row.top, row.right, row.bottom)
